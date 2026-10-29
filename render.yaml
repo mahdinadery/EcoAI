@@ -1,22 +1,23 @@
 # Render Blueprint — zero-server deployment straight from GitHub (free tier).
 #
 # How to use:
-#   1. Create a free PostgreSQL database (e.g. Neon — free plan, pooled
-#      connection string already contains ?sslmode=require, which `pg` supports).
-#   2. In Render: New -> Blueprint -> connect this GitHub repo. Render reads
-#      this file and creates the service below, redeploying on every push.
-#   3. For every `sync: false` variable, set the value ONCE in the Render
-#      dashboard (Environment tab). NEVER put real secrets in this file.
+#   1. Create a free PostgreSQL database on Neon (https://neon.tech) and copy
+#      the *Pooled* connection string (?sslmode=require is already included).
+#   2. In Render: New + -> Blueprint -> connect `mahdinadery/EcoAI`. Render
+#      reads this root `render.yaml` and configures `rootDir: news-intelligence-agent-main`
+#      automatically, redeploying on every push to `main`.
+#   3. Fill in the `sync: false` secrets once in the Render Blueprint prompt
+#      (or later in the service's Environment tab). NEVER commit real secrets.
 #
 # Schema sync is automatic on deploy: `npm start` runs the `prestart` hook
-# (scripts/db-ensure.mjs — additive-only, idempotent), so the "forgot to run
-# db:ensure" class of breakages cannot happen on platforms without shell access.
+# (`scripts/db-ensure.mjs` — additive-only, idempotent).
 services:
   - type: web
-    name: news-intelligence-agent
+    name: ecoai
     runtime: node
     plan: free
     branch: main
+    rootDir: news-intelligence-agent-main
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
@@ -24,20 +25,20 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      # --- database (required) ---
+      # --- database (required: Neon pooled connection string) ---
       - key: DATABASE_URL
         sync: false
-      # --- admin gate: SET THIS, or the /admin area is open to the internet ---
+      # --- admin gate: SET THIS, or /admin is open to the internet ---
       - key: ADMIN_ACCESS_KEY
         sync: false
-      # --- AI provider (optional; analyze falls back to "missing_key") ---
+      # --- AI provider (OpenAI / Groq / OpenRouter compatible) ---
       - key: AI_API_KEY
         sync: false
       - key: AI_API_BASE_URL
         sync: false
       - key: AI_API_MODEL
         sync: false
-      # --- Bale bot delivery (optional) ---
+      # --- Bale messenger bot delivery ---
       - key: BALE_BOT_TOKEN
         sync: false
       - key: BALE_CHAT_ID
@@ -53,9 +54,9 @@ services:
         sync: false
       - key: AUTO_SEND_MAX_ITEMS
         sync: false
-      # --- legacy single-feed source (optional; sources now live in DB) ---
+      # --- legacy single-feed fallback (optional; sources live in DB) ---
       - key: NEWS_SOURCE_RSS_URL
         sync: false
-      # --- outbound proxy for feeds that block non-Iran IPs (optional) ---
+      # --- optional outbound proxy for feed/article fetching ---
       - key: NEWS_FETCH_PROXY_URL
         sync: false

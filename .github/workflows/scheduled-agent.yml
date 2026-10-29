@@ -1,19 +1,18 @@
 name: Scheduled auto-publish (analysis + Bale)
 
-# Fires the agent's scheduler "tick" every 5 minutes. The tick is a cheap no-op
+# Fires EcoAI's scheduler "tick" every 5 minutes. The tick is a cheap no-op
 # unless one of the times configured in the dashboard (ارسال خودکار زمان‌بندی‌شده)
-# is due; then the app fetches feeds, analyzes pending news and sends matching
-# articles to the configured destination (Bale by default) without manual
-# approval.
+# is due; then the app fetches English economic feeds, translates & summarizes
+# pending articles in Persian, and sends qualifying posts to Bale automatically.
 #
-# Why an external cron: Render/Koyeb free tiers have no scheduler and may sleep;
-# GitHub Actions cron is free for public repos and each call wakes the app.
+# Why an external cron: Render free tier has no built-in scheduler and sleeps
+# after 15 minutes of inactivity; GitHub Actions cron wakes the app on schedule.
 #
-# Setup (once): repository secrets
-#   APP_URL          e.g. https://news-intelligence-agent.onrender.com (no slash)
-#   ADMIN_ACCESS_KEY same value as the host (required when the host enforces it)
+# Setup (once): GitHub -> Settings -> Secrets and variables -> Actions:
+#   APP_URL          e.g. https://ecoai.onrender.com (trailing slash optional)
+#   ADMIN_ACCESS_KEY same value as ADMIN_ACCESS_KEY in Render Environment
 #
-# GitHub only runs `schedule` on the default branch. Use "Run workflow" to test.
+# GitHub only runs `schedule` on the default branch (`main`). Use "Run workflow" to test.
 
 on:
   schedule:
@@ -35,9 +34,11 @@ jobs:
       - name: Scheduler tick (runs only at configured times)
         run: |
           if [ -z "$APP_URL" ]; then
-            echo "APP_URL secret is not set — scheduled auto-publish cannot run."
-            exit 1
+            echo "APP_URL secret is not set — skipping scheduled tick until configured."
+            echo "Set APP_URL and ADMIN_ACCESS_KEY in Repository Secrets to enable scheduled publishing." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          APP_URL="${APP_URL%/}"
           set -o pipefail
           curl -fsS --max-time 300 --retry 2 --retry-all-errors --retry-delay 30 \
             -X POST "$APP_URL/api/agent/scheduler/tick" \

@@ -1,0 +1,34 @@
+name: Scheduled news ingest
+
+# External cron for Render free tier (wakes the service and fetches due RSS/Atom
+# feeds every 15 minutes without analyzing or sending outside scheduled slots).
+# Analysis + automatic Bale delivery run in `.github/workflows/scheduled-agent.yml`.
+#
+# Setup (once): GitHub -> Settings -> Secrets and variables -> Actions:
+#   APP_URL          e.g. https://ecoai.onrender.com (trailing slash optional)
+#   ADMIN_ACCESS_KEY same value as ADMIN_ACCESS_KEY in Render Environment
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_URL: ${{ secrets.APP_URL }}
+      ADMIN_ACCESS_KEY: ${{ secrets.ADMIN_ACCESS_KEY }}
+    steps:
+      - name: Fetch due news sources (run-due pass)
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL secret is not set — skipping (scheduled ingest is inactive)."
+            exit 0
+          fi
+          APP_URL="${APP_URL%/}"
+          curl -fsS --max-time 120 --retry 3 --retry-all-errors --retry-delay 20 \
+            -X POST "$APP_URL/api/admin/news-sources/run-due" \
+            ${ADMIN_ACCESS_KEY:+-H "x-admin-key: $ADMIN_ACCESS_KEY"} \
+            | head -c 2000

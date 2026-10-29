@@ -1,13 +1,9 @@
 name: Schema sync (db:ensure)
 
-# On-demand, additive-only schema provisioning against the real Neon database.
-# This exists because the sandbox/dev environment cannot reach port 5432, while
-# GitHub-hosted runners can. Safe by design: scripts/db-ensure.mjs is
-# idempotent and NEVER drops/rewrites data. Useful after enabling Neon's
-# auto-suspend, after restoring a branch, or before the first deploy.
+# On-demand, additive-only schema provisioning against the Neon PostgreSQL database.
+# Safe by design: `scripts/db-ensure.mjs` is idempotent and NEVER drops or rewrites data.
 #
-# Requires repository secret: DATABASE_URL (the pooled Neon string, same value
-# as in Render's environment).
+# Requires repository secret: DATABASE_URL (the pooled Neon connection string).
 
 on:
   workflow_dispatch:
@@ -16,6 +12,9 @@ jobs:
   ensure:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: news-intelligence-agent-main
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
@@ -35,18 +34,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: news-intelligence-agent-main/package-lock.json
       - run: npm ci --ignore-scripts
         if: steps.cfg.outputs.run == 'true'
       - name: Run additive schema sync
         if: steps.cfg.outputs.run == 'true'
         run: npm run db:ensure
-      - name: Verify expected tables exist
+      - name: Verify expected tables and columns exist
         if: steps.cfg.outputs.run == 'true'
         run: |
           node - <<'EOF'
           const { Pool } = require("pg");
           (async () => {
-            const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+            const pool = new Pool({ connectionString: process.env.DATABASE_URL.trim(), max: 1 });
             const { rows } = await pool.query(
               `select table_name from information_schema.tables
                 where table_schema = 'public' order by 1`
@@ -54,12 +54,14 @@ jobs:
             console.log("public tables:", rows.map((r) => r.table_name).join(", ") || "(none)");
             const cols = await pool.query(
               `select table_name || '.' || column_name as c from information_schema.columns
-                where table_schema='public' and column_name in ('topic_filter','auto_send_policy','items_filtered','audience_focus') order by 1`
+                where table_schema='public' and column_name in ('topic_filter','auto_send_policy','items_filtered','audience_focus','translated_title') order by 1`
             );
             console.log("expected columns present:", cols.rows.map((r) => r.c).join(", ") || "(none)");
-            const missing = ["ai_configurations.audience_focus"].filter(
-              (want) => !cols.rows.some((r) => r.c === want)
-            );
+            const missing = [
+              "ai_configurations.audience_focus",
+              "news.translated_title",
+              "ai_analyses.translated_title",
+            ].filter((want) => !cols.rows.some((r) => r.c === want));
             if (missing.length > 0) {
               console.error("missing after sync:", missing.join(", "));
               process.exit(1);

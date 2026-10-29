@@ -7,12 +7,12 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: news-intelligence-agent-main
     env:
-      # The app requires DATABASE_URL to be *defined* at import time (module-level
-      # pool) and the `postinstall` db-ensure hook tries to connect. No workflow
-      # here touches a live database: every page is force-dynamic and the unit
-      # tests are pure, so a dummy URL is enough (connections fail fast on
-      # localhost and db-ensure soft-fails via `|| true`).
+      # Dummy connection string so module-level DB imports succeed during CI
+      # without touching a live database (`postinstall` db-ensure soft-fails).
       DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: news-intelligence-agent-main/package-lock.json
       - run: npm ci
       - run: npm test
       - run: npm run typecheck

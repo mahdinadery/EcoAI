@@ -2,7 +2,12 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { buildPoolOptions } from "./pool-config";
 
-const databaseUrl = process.env.DATABASE_URL;
+export const isNextProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
+
+const configuredDatabaseUrl = process.env.DATABASE_URL?.trim();
+const databaseUrl =
+  configuredDatabaseUrl ||
+  (isNextProductionBuild ? "postgresql://build:build@127.0.0.1:5432/build" : undefined);
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
@@ -30,5 +35,3 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export const db = drizzle(pool);
-
-export const isNextProductionBuild = process.env.NEXT_PHASE === "phase-production-build";

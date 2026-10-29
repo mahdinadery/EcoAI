@@ -1,0 +1,42 @@
+name: Scheduled news ingest
+
+# External cron for hosts without a background process (Render/Koyeb free tiers
+# have no scheduler and may sleep). Public repos => GitHub Actions cron is free.
+#
+# This workflow ONLY fetches feeds (no analysis, no sending), so it can never
+# deliver anything outside the times configured in the dashboard.
+# Analysis + automatic Bale delivery run in `.github/workflows/scheduled-agent.yml`
+# at the times set in "ارسال خودکار زمان‌بندی‌شده" on /dashboard.
+#
+# Setup (once, in the GitHub repo): Settings -> Secrets and variables ->
+# Actions -> Repository secrets:
+#   APP_URL          e.g. https://news-intelligence-agent.onrender.com  (no trailing slash)
+#   ADMIN_ACCESS_KEY same value as the ADMIN_ACCESS_KEY env var on the host
+#                    (omit only if the host intentionally has no admin key)
+#
+# Note: GitHub only runs `schedule` for workflows on the default branch, so
+# this starts ticking after it lands on `main`. Use "Run workflow" to test now.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_URL: ${{ secrets.APP_URL }}
+      ADMIN_ACCESS_KEY: ${{ secrets.ADMIN_ACCESS_KEY }}
+    steps:
+      - name: Fetch due news sources (run-due pass)
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL secret is not set — skipping (scheduled ingest is inactive)."
+            exit 0
+          fi
+          curl -fsS --max-time 120 --retry 3 --retry-all-errors --retry-delay 20 \
+            -X POST "$APP_URL/api/admin/news-sources/run-due" \
+            ${ADMIN_ACCESS_KEY:+-H "x-admin-key: $ADMIN_ACCESS_KEY"} \
+            | head -c 2000

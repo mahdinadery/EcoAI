@@ -1,0 +1,194 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (`.dark` on <html>, set by the inline theme script
+   in layout.tsx before first paint). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Theme tokens ──────────────────────────────────────────────────────────
+   One semantic palette for the whole product. Every surface/border/text
+   class (bg-surface, text-ink, border-line, …) resolves against these
+   variables, so the light/dark switch is a single-variable swap. */
+:root {
+  color-scheme: light;
+
+  --canvas: #eef2f7;
+  --canvas-2: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+
+  --line: #e2e8f0;
+  --line-soft: #e8eef6;
+  --line-strong: #cbd5e1;
+
+  --ink: #0f172b;
+  --ink-soft: #334155;
+  --muted: #64748b;
+  --faint: #94a3b8;
+  --on-ink: #ffffff;
+
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-ink: #1d4ed8;
+  --accent-line: #bfdbfe;
+  --on-accent: #ffffff;
+
+  --brand: #7c3aed;
+  --brand-strong: #6d28d9;
+  --brand-soft: #f5f3ff;
+  --brand-ink: #6d28d9;
+  --brand-line: #ddd6fe;
+
+  --ok: #10b981;
+  --ok-strong: #059669;
+  --ok-soft: #ecfdf5;
+  --ok-ink: #047857;
+  --ok-line: #a7f3d0;
+
+  --warn: #f59e0b;
+  --warn-strong: #d97706;
+  --warn-soft: #fffbeb;
+  --warn-ink: #b45309;
+  --warn-line: #fde68a;
+
+  --danger: #f43f5e;
+  --danger-strong: #e11d48;
+  --danger-soft: #fff1f2;
+  --danger-ink: #be123c;
+  --danger-line: #fecdd3;
+
+  --track: #e2e8f0;
+  --track-strong: #cbd5e1;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --canvas: #0a1020;
+  --canvas-2: #0d1526;
+  --surface: #121b2e;
+  --surface-2: #182338;
+  --surface-3: #1e2a41;
+
+  --line: #263349;
+  --line-soft: #1c2740;
+  --line-strong: #35476b;
+
+  --ink: #e8eef8;
+  --ink-soft: #c2cddf;
+  --muted: #8b9bb8;
+  --faint: #64748b;
+  --on-ink: #0f172a;
+
+  --accent: #3b82f6;
+  --accent-strong: #60a5fa;
+  --accent-soft: #14264a;
+  --accent-ink: #93c5fd;
+  --accent-line: #27447a;
+  --on-accent: #ffffff;
+
+  --brand: #8b5cf6;
+  --brand-strong: #a78bfa;
+  --brand-soft: #251c47;
+  --brand-ink: #c4b5fd;
+  --brand-line: #4c3a8a;
+
+  --ok: #10b981;
+  --ok-strong: #34d399;
+  --ok-soft: #0e2e2a;
+  --ok-ink: #6ee7b7;
+  --ok-line: #1d5548;
+
+  --warn: #f59e0b;
+  --warn-strong: #fbbf24;
+  --warn-soft: #2c2310;
+  --warn-ink: #fcd34d;
+  --warn-line: #6b5416;
+
+  --danger: #f43f5e;
+  --danger-strong: #fb7185;
+  --danger-soft: #2e1420;
+  --danger-ink: #fda4af;
+  --danger-line: #6e2a3f;
+
+  --track: #263349;
+  --track-strong: #35476b;
+}
+
+/* `inline` keeps the var() indirection so utilities follow the per-scope
+   value of the underlying token (this is what makes .dark work). */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-canvas-2: var(--canvas-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-on-ink: var(--on-ink);
+
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-line: var(--accent-line);
+  --color-on-accent: var(--on-accent);
+
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-line: var(--brand-line);
+
+  --color-ok: var(--ok);
+  --color-ok-strong: var(--ok-strong);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-ink: var(--ok-ink);
+  --color-ok-line: var(--ok-line);
+
+  --color-warn: var(--warn);
+  --color-warn-strong: var(--warn-strong);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-ink: var(--warn-ink);
+  --color-warn-line: var(--warn-line);
+
+  --color-danger: var(--danger);
+  --color-danger-strong: var(--danger-strong);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-line: var(--danger-line);
+
+  --color-track: var(--track);
+  --color-track-strong: var(--track-strong);
+
+  --font-sans: var(--font-vazirmatn), ui-sans-serif, system-ui, "Segoe UI", Tahoma, Arial, sans-serif;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--accent) 28%, transparent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+}
+
+/* Shared form-control style for the admin filter bar (kept as one utility set
+   instead of repeating ~12 classes seven times). */
+.admin-filter-input {
+  @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink-soft focus:border-accent focus:outline-none;
+}

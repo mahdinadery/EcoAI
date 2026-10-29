@@ -1,0 +1,48 @@
+name: Scheduled auto-publish (analysis + Bale)
+
+# Fires the agent's scheduler "tick" every 5 minutes. The tick is a cheap no-op
+# unless one of the times configured in the dashboard (ارسال خودکار زمان‌بندی‌شده)
+# is due; then the app fetches feeds, analyzes pending news and sends matching
+# articles to the configured destination (Bale by default) without manual
+# approval.
+#
+# Why an external cron: Render/Koyeb free tiers have no scheduler and may sleep;
+# GitHub Actions cron is free for public repos and each call wakes the app.
+#
+# Setup (once): repository secrets
+#   APP_URL          e.g. https://news-intelligence-agent.onrender.com (no slash)
+#   ADMIN_ACCESS_KEY same value as the host (required when the host enforces it)
+#
+# GitHub only runs `schedule` on the default branch. Use "Run workflow" to test.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-agent-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      APP_URL: ${{ secrets.APP_URL }}
+      ADMIN_ACCESS_KEY: ${{ secrets.ADMIN_ACCESS_KEY }}
+    steps:
+      - name: Scheduler tick (runs only at configured times)
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL secret is not set — scheduled auto-publish cannot run."
+            exit 1
+          fi
+          set -o pipefail
+          curl -fsS --max-time 300 --retry 2 --retry-all-errors --retry-delay 30 \
+            -X POST "$APP_URL/api/agent/scheduler/tick" \
+            -H 'content-type: application/json' -d '{}' \
+            ${ADMIN_ACCESS_KEY:+-H "x-admin-key: $ADMIN_ACCESS_KEY"} \
+            -o /tmp/scheduler-result.json
+          head -c 12000 /tmp/scheduler-result.json
+          python3 -c 'import json; d=json.load(open("/tmp/scheduler-result.json")); assert d.get("success"), "Scheduler reported failure"'

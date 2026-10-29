@@ -61,6 +61,7 @@ export async function POST(
         newsItem: {
           id: result.newsItem.id,
           title: result.newsItem.title,
+          translatedTitle: result.newsItem.translatedTitle,
           summary: result.newsItem.summary,
           category: result.newsItem.category,
           importanceScore: result.newsItem.importanceScore,

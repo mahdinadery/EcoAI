@@ -1,14 +1,8 @@
 /**
  * Server-side AI News Analysis logic — SERVER-SIDE ONLY.
  *
- * Coordinates database reads, AI service completion and persistence.
- * Analyzed news are updated with scores and summary in PostgreSQL.
- *
- * Milestone 5: the prompt/model/thresholds/output-schema now come from the
- * active AI Configuration (`getActiveAiConfig()`) instead of being hard-coded,
- * so an administrator can retune AI behavior from `/admin/ai-config` without a
- * code change. If no configuration has ever been saved, a default one — that
- * reproduces the original Milestone 4 prompt behavior — is created automatically.
+ * Coordinates database reads, optional full-text extraction for English
+ * analytical articles, AI translation/summarization, and PostgreSQL persistence.
  */
 
 import { db } from "@/db";
@@ -17,6 +11,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { mergeTokenUsage, resolveEffectiveModel, runAiAnalysis, type AiTokenUsage } from "../ai/client";
 import { gradeRelevanceWithUsage, isBorderlineRelevance } from "../ai/grader";
 import { getActiveAiConfig } from "../ai/config-service";
+import { composeArticleTextForAi, fetchArticleBody, shouldFetchFullArticleText } from "./article-extractor";
+import { normalizeContent } from "./normalize";
 
 export type AnalyzeResult =
   | { ok: true; newsItem: NewsRow }
@@ -25,8 +21,6 @@ export type AnalyzeResult =
 /**
  * Append one row to the immutable AI analysis history. History never overwrites
  * earlier analyses and records which AI configuration produced each result.
- * A history-write hiccup must never mask the analysis outcome, so failures are
- * logged, not thrown.
  */
 async function recordAnalysisHistory(input: {
   newsId: string;
@@ -38,6 +32,7 @@ async function recordAnalysisHistory(input: {
   shadowEvaluation?: import("../ai/shadow-evaluation").ShadowEvaluation | null;
   usage?: AiTokenUsage | null;
   analysis?: {
+    translatedTitle: string | null;
     summary: string;
     category: string;
     importance: number;
@@ -63,6 +58,7 @@ async function recordAnalysisHistory(input: {
       promptTokens: input.usage?.promptTokens ?? null,
       completionTokens: input.usage?.completionTokens ?? null,
       totalTokens: input.usage?.totalTokens ?? null,
+      translatedTitle: input.analysis?.translatedTitle ?? null,
       summary: input.analysis?.summary ?? null,
       category: input.analysis?.category ?? null,
       importance: input.analysis?.importance ?? null,
@@ -81,8 +77,9 @@ async function recordAnalysisHistory(input: {
 }
 
 /**
- * Loads a news article by ID, analyzes it with AI using the active
- * configuration, and stores the structured results.
+ * Loads a news article by ID, enriches short RSS snippets with full article
+ * body when available, translates + summarizes + scores it with AI using the
+ * active configuration, and stores the structured results.
  */
 export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
   let article: NewsRow | undefined;
@@ -111,11 +108,7 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
 
   const config = await getActiveAiConfig();
 
-  // Atomic claim before the AI call: exactly one analysis per article at a
-  // time. Two concurrent requests (e.g. overlapping scheduled fetch runs) can
-  // no longer both spend an AI round-trip on the same row — the loser is told
-  // the article is being processed. Stale AI_PROCESSING rows are recovered by
-  // the fetch route after STALE_PROCESSING_MINUTES.
+  // Atomic claim before the AI call: exactly one analysis per article at a time.
   try {
     const [claimed] = await db
       .update(news)
@@ -135,11 +128,44 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
     // Best effort; on a transient bookkeeping error the analysis will still proceed.
   }
 
+  // Enrich short RSS teasers by fetching readable article prose from the webpage.
+  let effectiveContent = article.content ?? article.normalizedContent ?? null;
+  if (
+    shouldFetchFullArticleText({
+      url: article.url,
+      description: article.description,
+      content: effectiveContent,
+    })
+  ) {
+    const extracted = await fetchArticleBody(article.url);
+    if (extracted && extracted.length > (effectiveContent ?? "").length) {
+      effectiveContent = extracted;
+      try {
+        await db
+          .update(news)
+          .set({
+            content: extracted,
+            normalizedContent: normalizeContent(extracted, article.description),
+            updatedAt: new Date(),
+          })
+          .where(eq(news.id, id));
+      } catch {
+        // Non-blocking: AI analysis still gets `effectiveContent` in memory.
+      }
+    }
+  }
+
+  const composed = composeArticleTextForAi({
+    description: article.description,
+    content: effectiveContent,
+  });
+
   // AI Service call — prompt/model/thresholds/output schema all come from `config`.
   const result = await runAiAnalysis(
     {
       title: article.title,
-      description: article.description,
+      description: composed.summarySnippet ?? article.description,
+      content: composed.fullText,
       source: article.source,
       publishedAt: article.publishedAt ? article.publishedAt.toISOString() : null,
     },
@@ -147,8 +173,6 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
   );
 
   if (!result.ok) {
-    // AI failure handling: the news item is kept, its status flags the failure
-    // (retryable via the admin action), and the error is preserved in history.
     await recordAnalysisHistory({
       newsId: id,
       configurationId: config.id,
@@ -170,16 +194,28 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
     };
   }
 
-  const { summary, category, importance, relevance, novelty, mainEvent, whyItMatters, hashtags, entities, shouldSend, reason } = result.analysis;
+  const {
+    translatedTitle,
+    summary,
+    category,
+    importance,
+    relevance,
+    novelty,
+    mainEvent,
+    whyItMatters,
+    hashtags,
+    entities,
+    shouldSend,
+    reason,
+  } = result.analysis;
 
-  // Phase 3 (#9): borderline relevance gets ONE cheap second opinion. The
-  // grader can only veto ("rejected") — it never raises a score.
+  // Borderline relevance gets ONE cheap second opinion.
   let relevanceGrade: string | null = null;
   let combinedUsage: AiTokenUsage | null = result.usage;
   if (isBorderlineRelevance(relevance, config.decisionRules)) {
     try {
       const gradeOutcome = await gradeRelevanceWithUsage({
-        title: article.title,
+        title: translatedTitle ? `${translatedTitle} (${article.title})` : article.title,
         summary,
         audienceFocus: config.audienceFocus,
       });
@@ -195,6 +231,7 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
     const [updated] = await db
       .update(news)
       .set({
+        translatedTitle,
         summary,
         category,
         importanceScore: importance,
@@ -209,9 +246,6 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
         analysisReason: reason,
         analyzedAt: new Date(),
         aiConfigVersion: config.version,
-        // Milestone 7/8 transition rule: the AI recommendation moves the article
-        // to READY_TO_SEND (a publishing candidate becomes possible), while a
-        // negative recommendation stops at AI_ANALYZED. No sending happens here.
         status: shouldSend ? "READY_TO_SEND" : "AI_ANALYZED",
         updatedAt: new Date(),
       })
@@ -235,7 +269,20 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
       status: "success",
       usage: combinedUsage,
       shadowEvaluation: result.shadowEvaluation,
-      analysis: { summary, category, importance, relevance, novelty, mainEvent: mainEvent ?? null, whyItMatters, hashtags, entities, shouldSend, reason },
+      analysis: {
+        translatedTitle,
+        summary,
+        category,
+        importance,
+        relevance,
+        novelty,
+        mainEvent: mainEvent ?? null,
+        whyItMatters,
+        hashtags,
+        entities,
+        shouldSend,
+        reason,
+      },
     });
 
     return { ok: true, newsItem: updated };

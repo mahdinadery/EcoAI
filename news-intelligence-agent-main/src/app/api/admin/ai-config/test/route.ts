@@ -8,6 +8,7 @@ import type { AiConfigInput } from "@/lib/ai/config-types";
 import { baselineKeywords, evaluateTopicFilter } from "@/lib/news/topic-filter";
 import { buildAIAnalysisPrompt } from "@/lib/ai/prompt-builder";
 import { validateAiOutputAgainstSchema } from "@/lib/ai/output-parser";
+import { composeArticleTextForAi } from "@/lib/news/article-extractor";
 import { db } from "@/db";
 import { news, type NewsRow } from "@/db/schema";
 import { renderPublishingMessage } from "@/lib/delivery/template";
@@ -52,6 +53,7 @@ export async function GET(request: Request) {
 type ManualArticle = {
   title: string;
   description: string | null;
+  content?: string | null;
   source: string;
   publishedAt: string | null;
 };
@@ -113,6 +115,8 @@ export async function POST(request: Request) {
       .select({
         title: news.title,
         description: news.description,
+        content: news.content,
+        normalizedContent: news.normalizedContent,
         source: news.source,
         publishedAt: news.publishedAt,
       })
@@ -124,9 +128,15 @@ export async function POST(request: Request) {
       return Response.json({ success: false, message: "خبر انتخاب‌شده پیدا نشد." }, { status: 404 });
     }
 
+    const composed = composeArticleTextForAi({
+      description: row.description,
+      content: row.content ?? row.normalizedContent ?? null,
+    });
+
     article = {
       title: row.title,
-      description: row.description,
+      description: composed.summarySnippet ?? row.description,
+      content: composed.fullText,
       source: row.source,
       publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
     };
@@ -190,6 +200,7 @@ export async function POST(request: Request) {
     rawResponse: completion.rawText,
     publishingPreview: validation.ok ? renderPublishingMessage(configForPrompt.publishingTemplate, {
       title: article.title,
+      translatedTitle: validation.value.translatedTitle,
       source: article.source,
       url: "https://example.com/preview",
       publishedAt: article.publishedAt && Number.isFinite(Date.parse(article.publishedAt)) ? new Date(article.publishedAt) : null,

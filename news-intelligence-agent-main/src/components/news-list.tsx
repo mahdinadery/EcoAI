@@ -16,6 +16,7 @@ type AutoSendSummary = {
 /** AI fields returned by the analyze endpoint. */
 type AnalysisPatch = Pick<
   NewsListItem,
+  | "translatedTitle"
   | "summary"
   | "category"
   | "importanceScore"
@@ -107,7 +108,7 @@ function ArticleCard({
   const [delivery, setDelivery] = useState<NewsDeliveryState>(
     initialDelivery ?? { local: null, bale: null, lastSentAt: null },
   );
-  const [destination, setDestination] = useState<Destination>("local");
+  const [destination, setDestination] = useState<Destination>("bale");
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -136,6 +137,7 @@ function ArticleCard({
       if (data.success && patch) {
         setItem((prev) => ({
           ...prev,
+          translatedTitle: patch.translatedTitle,
           summary: patch.summary,
           category: patch.category,
           importanceScore: patch.importanceScore,
@@ -245,9 +247,14 @@ function ArticleCard({
 
       <h3 className="mt-3 text-base font-bold leading-7 text-ink sm:text-lg">
         <a className="hover:underline" href={item.url} rel="noopener noreferrer nofollow" target="_blank">
-          {item.title}
+          {item.translatedTitle?.trim() || item.title}
         </a>
       </h3>
+      {item.translatedTitle?.trim() && item.translatedTitle.trim().toLowerCase() !== item.title.trim().toLowerCase() ? (
+        <p className="mt-1 text-xs font-medium leading-5 text-muted" dir="ltr">
+          🌐 {item.title}
+        </p>
+      ) : null}
 
       {item.description ? (
         <p className="mt-2 text-sm leading-7 text-muted">{truncate(item.description, DESCRIPTION_LIMIT)}</p>

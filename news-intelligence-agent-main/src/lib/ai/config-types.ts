@@ -1,5 +1,5 @@
 /**
- * AI Configuration Center — shared types (Milestone 5).
+ * AI Configuration Center — shared types (Milestone 5+).
  *
  * These types describe *data*, never executable code: an administrator edits
  * these values from `/admin/ai-config`, but the prompt-building, AI call,
@@ -9,11 +9,11 @@
 
 /**
  * One feature = one field the AI is asked to produce. The `name` doubles as the
- * literal JSON key the AI must return and the key already consumed by the
- * existing analyze pipeline (src/lib/news/analyze.ts) — keeping these names
- * unchanged from Milestone 4 is what keeps analysis backward compatible.
+ * literal JSON key the AI must return and the key consumed by the analyze
+ * pipeline (src/lib/news/analyze.ts).
  */
 export type AiFeatureKey =
+  | "translatedTitle"
   | "summary"
   | "category"
   | "importance"
@@ -42,7 +42,7 @@ export type AiFeaturesConfig = Record<AiFeatureKey, AiFeatureConfig>;
  * This is intentionally separate from the Agent's auto-delivery rule
  * (src/lib/agent/rules.ts, AUTO_SEND_* env vars), which decides whether an
  * ALREADY analyzed article is actually delivered. This section only shapes what
- * the AI *recommends* — it never sends anything (Milestone 5 scope).
+ * the AI *recommends* — it never sends anything.
  */
 export type AiDecisionRules = {
   bulletin?: Partial<import("../delivery/bulletin").BulletinSettings>;
@@ -61,9 +61,7 @@ export type AiDecisionRules = {
    * How the score minimums combine when the model decides `shouldSend`:
    *  - "all" (default, recommended): AND — every enabled minimum must be met.
    *    A high importance score can never compensate for low relevance.
-   *  - "any": legacy OR behaviour (any one minimum is enough). Kept only for
-   *    backward compatibility with configurations saved before the fix; it is
-   *    the reason off-topic-but-important articles used to be recommended.
+   *  - "any": legacy OR behaviour (any one minimum is enough).
    * Missing values read as "all".
    */
   combine?: "all" | "any";
@@ -103,7 +101,7 @@ export type AiProvider = "openai-compatible";
 export type AiTopicRule = {
   /** Stable client-generated id (UI list keys / edit identity). */
   id: string;
-  /** Human-readable Persian label, e.g. «بازار خودرو». */
+  /** Human-readable Persian label, e.g. «سیاست پولی و بانک‌های مرکزی». */
   label: string;
   enabled: boolean;
   /** Matched against title+description+content (normalized). ANY keyword hits => topic matches. */
@@ -126,11 +124,7 @@ export type AiTopicFilterConfig = {
   /**
    * Hard deny-list that applies in BOTH modes: an article containing any of
    * these keywords is dropped before the AI stage, even when it also matches an
-   * included topic. This is the "these kinds of news must never be sent" switch
-   * (sports, celebrity news, daily prices, ...). Optional/empty => no
-   * operator deny-list. NOTE: a small BASELINE_BLOCKED_KEYWORDS list in
-   * topic-filter.ts always applies on top of this, even when the filter is
-   * disabled entirely.
+   * included topic.
    */
   blockedKeywords?: string[];
 };
@@ -141,8 +135,6 @@ export type AiTopicFilterConfig = {
  * Kept conceptually separate from AiDecisionRules (which only shapes the AI's
  * shouldSend recommendation). `useCustom: false` (default) preserves the
  * historical behavior exactly: the AUTO_SEND_* environment variables decide.
- * When `useCustom: true`, the values below are authoritative — so the operator
- * can retune delivery from the dashboard without touching code or env files.
  */
 export type AiAutoSendPolicy = {
   useCustom: boolean;
@@ -165,7 +157,7 @@ export type ActiveAiConfig = {
   /** Empty string => caller must fall back to AI_API_MODEL / AI_MODEL / built-in default. */
   model: string;
   systemPrompt: string;
-  /** Audience/relevance anchor. Empty string => built-in credit-rating default. */
+  /** Audience/relevance anchor. Empty string => built-in analytical-economics default. */
   audienceFocus: string;
   temperature: number;
   maxTokens: number;
@@ -196,9 +188,7 @@ export type AiConfigInput = {
   systemPrompt: string;
   /**
    * Who the audience is + what "relevant" means when the AI scores `relevance`.
-   * Empty/missing => the built-in credit-rating audience definition (see
-   * DEFAULT_AUDIENCE_FOCUS in prompt-builder.ts, which also hard-wires the
-   * "unrelated news gets relevance < 30" rules into every prompt).
+   * Empty/missing => the built-in analytical-economics audience definition.
    */
   audienceFocus?: string;
   temperature: number;
@@ -215,6 +205,7 @@ export type AiConfigInput = {
 };
 
 export const AI_FEATURE_ORDER: AiFeatureKey[] = [
+  "translatedTitle",
   "summary",
   "category",
   "importance",
@@ -229,41 +220,34 @@ export const AI_FEATURE_ORDER: AiFeatureKey[] = [
 ];
 
 export const AI_FEATURE_LABELS: Record<AiFeatureKey, string> = {
-  summary: "خلاصه",
-  category: "دسته‌بندی",
+  translatedTitle: "ترجمه فارسی عنوان",
+  summary: "خلاصه و ترجمه تحلیلی",
+  category: "دسته‌بندی اقتصادی",
   importance: "امتیاز اهمیت",
   relevance: "امتیاز مرتبط بودن",
   novelty: "امتیاز تازگی",
-  mainEvent: "رویداد اصلی",
+  mainEvent: "محور اصلی مقاله",
   whyItMatters: "چرا مهم است",
   hashtags: "هشتگ‌ها",
   entities: "نهادها و سازمان‌ها",
   shouldSend: "پیشنهاد ارسال",
-  reason: "دلیل ارسال",
+  reason: "دلیل تصمیم ارسال",
 };
 
 /**
- * Default configuration — migrates the exact behavior that was previously
- * hard-coded in src/lib/ai/client.ts (Milestone 4) into editable data. Values
- * here must reproduce the same prompt intent so existing AI analysis keeps
- * working unchanged for anyone who has not touched the admin UI yet.
- */
-/**
  * The legacy `whyItMatters` instruction told the model to answer the canned
- * phrase «برای مخاطب هدف اهمیت مشخصی ندارد» when unsure — which then shipped
- * to the channel even for highly-rated stories. Kept verbatim so stored
- * configurations that still carry it are detected and upgraded on read.
+ * phrase «برای مخاطب هدف اهمیت مشخصی ندارد» when unsure — kept verbatim so
+ * stored configurations that still carry it are detected and upgraded on read.
  */
 export const LEGACY_WHY_IT_MATTERS_INSTRUCTION =
   "در یک جمله کوتاه فارسی بگو این خبر چرا برای مخاطب هدف (طبق بخش «تعریف مخاطب و ملاک امتیاز مرتبط بودن») مهم است. اگر خبر برای مخاطب مهم نیست، بنویس «برای مخاطب هدف اهمیت مشخصی ندارد».";
 
 /**
- * Replacement instruction: always demand a CONCRETE reason tied to the
- * audience, never a canned "doesn't matter" filler — including for indirect
- * macro channels.
+ * Default `whyItMatters` instruction for analytical economics: always demand a
+ * concrete economic transmission channel, never a canned "doesn't matter" filler.
  */
 export const WHY_IT_MATTERS_DEFAULT_INSTRUCTION =
-  "در یک جمله کوتاه و مشخص فارسی بگو این خبر چرا برای مخاطب هدف (طبق بخش «تعریف مخاطب و ملاک امتیاز مرتبط بودن») مهم است و به کانال اثرگذاری آن اشاره کن (مثلاً نقدینگی و تأمین مالی بانک‌ها، ریسک اعتباری مشتریان، کیفیت دارایی، هزینهٔ سرمایه، رتبه‌بندی اعتباری یا شاخص‌های کلان اقتصادی). هرگز جمله‌های بی‌محتوا یا منفی مانند «برای مخاطب هدف اهمیت مشخصی ندارد» یا «مهم نیست» ننویس؛ حتی اگر پیوند مستقیم نمی‌بینی، زنجیرهٔ اثر غیرمستقیم (مثلاً اثر شاخص‌های کلان بر ترازنامهٔ بانک‌ها) را در همان یک جمله شرح بده.";
+  "در یک تا دو جملهٔ کوتاه و مشخص فارسی بگو این مقاله یا تحلیل اقتصادی چرا برای مخاطب هدف (طبق بخش «تعریف مخاطب و ملاک امتیاز مرتبط بودن») مهم است و به کانال اثرگذاری اقتصادی آن اشاره کن (مثلاً سیاست پولی و نرخ بهره، تورم، رشد اقتصادی، تجارت جهانی، بدهی دولت، بازار کار یا ثبات مالی). هرگز جمله‌های بی‌محتوا یا منفی مانند «برای مخاطب هدف اهمیت مشخصی ندارد» یا «مهم نیست» ننویس؛ حتی برای مباحث نظری، زنجیرهٔ اثر سیاستی یا بازاری را روشن شرح بده.";
 
 /**
  * Rewrites ONLY an untouched legacy instruction to the fixed default; any
@@ -275,106 +259,124 @@ export function upgradeLegacyWhyItMattersInstruction(instruction: string): strin
     : instruction;
 }
 
-export const DEFAULT_SYSTEM_PROMPT = `شما یک تحلیلگر خبری حرفه‌ای (News Analyst Agent) هستید. وظیفه شما تحلیل مقاله خبری ارائه‌شده و تولید یک پاسخ ساختاریافته JSON دقیق است.
+export const DEFAULT_SYSTEM_PROMPT = `شما یک تحلیلگر ارشد اقتصادی و مترجم تخصصی مقالات و پژوهش‌های اقتصادی انگلیسی به فارسی هستید. وظیفهٔ شما مطالعهٔ دقیق مقاله یا گزارش اقتصادی ارائه‌شده (به زبان انگلیسی)، استخراج تز اصلی، استدلال اقتصادی، داده‌ها و پیامدهای سیاستی/بازاری آن، و تولید یک پاسخ ساختاریافته JSON دقیق به زبان فارسی روان و علمی است.
 
-هرگز واقعیت، عدد یا ادعایی که در عنوان یا توضیحات مقاله نیامده را حدس نزن یا اختراع نکن. اگر اطلاعات ناکافی است، مقادیر را محافظه‌کارانه در نظر بگیر و این کمبود اطلاعات را به‌صراحت در خلاصه و دلیل ذکر کن.
+اصول الزامی ترجمه و خلاصه‌سازی:
+- عنوان انگلیسی مقاله را در فیلد «translatedTitle» به فارسی دقیق، سلیس و حرفه‌ای ترجمه کن و از ترجمهٔ تحت‌اللفظی و ماشینی پرهیز کن.
+- در فیلد «summary» خلاصه‌ای عمیق، منسجم و تحلیلی به فارسی روان بنویس که پرسش اصلی مقاله، سازوکار یا استدلال اقتصادی نویسنده، شواهد/آمارهای کلیدی ذکرشده در متن و نتیجه‌گیری نهایی را به‌روشنی منتقل کند.
+- اصطلاحات تخصصی اقتصاد را به معادل‌های استاندارد فارسی برگردان و تنها در صورت کمک به دقت علمی، نام اختصاری نهادها یا شاخص‌های شناخته‌شده (مانند IMF، Fed، ECB، GDP) را ذکر کن.
+- هرگز واقعیت، عدد، تاریخ یا ادعایی که در متن ورودی نیامده را حدس نزن یا اختراع نکن. اگر متن دریافتی صرفاً یک چکیدهٔ کوتاه است، تحلیل و خلاصه را محافظه‌کارانه و صرفاً بر پایهٔ همان متن بنویس.
 
-پاسخ باید دقیقاً و فقط یک شیء JSON باشد؛ هیچ متن یا توضیح اضافه‌ای خارج از آن ننویس.`;
+پاسخ باید دقیقاً و فقط یک شیء JSON معتبر باشد؛ هیچ متن یا توضیح اضافه‌ای خارج از آن ننویس.`;
 
 export const DEFAULT_FEATURES: AiFeaturesConfig = {
+  translatedTitle: {
+    enabled: true,
+    instruction:
+      "عنوان انگلیسی مقاله را به فارسی دقیق، روان و حرفه‌ای ترجمه کن (حداکثر ۲۲ کلمه، بدون علامت نقل‌قول اضافی در ابتدا و انتها).",
+  },
   summary: {
     enabled: true,
-    instruction: "یک خلاصه دقیق، باکیفیت و حرفه‌ای به زبان فارسی روان از مقاله بنویس (۳۰ تا ۸۰ کلمه).",
+    instruction:
+      "یک خلاصه و ترجمهٔ تحلیلی، دقیق و خوش‌خوان به زبان فارسی روان از مقاله بنویس (۷۰ تا ۱۶۰ کلمه) که مسئلهٔ محوری، استدلال اقتصادی، شواهد کلیدی و جمع‌بندی نویسنده را پوشش دهد.",
   },
   category: {
     enabled: true,
     instruction:
-      "مناسب‌ترین دسته‌بندی فارسی را برای این مقاله انتخاب کن (مثلاً: اقتصاد، سیاست، فناوری، کسب‌وکار، بازار، جامعه، بین‌الملل، سایر).",
+      "مناسب‌ترین دسته‌بندی تخصصی اقتصادی را به فارسی انتخاب کن (مثلاً: سیاست پولی و بانک مرکزی، اقتصاد کلان، تجارت جهانی و ژئواکونومیک، بازارهای مالی، انرژی و کالا، اقتصاد توسعه، فناوری و بازار کار، اقتصاد سیاسی).",
   },
   importance: {
     enabled: true,
-    instruction: "اهمیت این خبر را برای عموم مردم یا بخش‌های کسب‌وکار ارزیابی کن.",
+    instruction:
+      "اهمیت علمی، سیاستی یا بازاری این مقاله و عمق استدلال اقتصادی آن را ارزیابی کن.",
     scaleMin: 0,
     scaleMax: 100,
   },
   relevance: {
     enabled: true,
     instruction:
-      "میزان مرتبط بودن این خبر با مخاطب هدف (طبق بخش «تعریف مخاطب و ملاک امتیاز مرتبط بودن») را ارزیابی کن. اخباری که با آن تعریف پیوند روشنی ندارند یا صرفاً دربارهٔ «تخصیص اعتبار» دولتی/عمرانی (مانند ساخت جاده و پل) و «اعتبار کالابرگ/یارانه» هستند (نه اعتبارسنجی و رتبه‌بندی اعتباری) باید امتیاز زیر ۲۰ بگیرند.",
+      "میزان مرتبط بودن این مطلب با حوزهٔ مقالات تحلیلی اقتصادی، اقتصاد کلان، سیاست‌گذاری و بازارهای جهانی (طبق بخش «تعریف مخاطب و ملاک امتیاز مرتبط بودن») را ارزیابی کن. مطالب غیرمرتبط با اقتصاد (ورزشی، سرگرمی، سلبریتی، حوادث یا تبلیغات تجاری) باید امتیاز زیر ۲۰ بگیرند.",
     scaleMin: 0,
     scaleMax: 100,
   },
   novelty: {
     enabled: true,
-    instruction: "میزان تازگی این خبر (رویداد جدید در برابر تکرار خبر قدیمی) را ارزیابی کن.",
+    instruction:
+      "میزان تازگی دیدگاه تحلیلی، یافته‌های پژوهشی یا داده‌های ارائه‌شده در مقاله را نسبت به خبرهای تکراری روزمره ارزیابی کن.",
     scaleMin: 0,
     scaleMax: 100,
   },
   mainEvent: {
     enabled: true,
-    instruction: "رویداد یا تحول اصلی توصیف‌شده در مقاله را در یک جمله کوتاه فارسی مشخص کن.",
+    instruction:
+      "تز اصلی، یافتهٔ کلیدی یا پیام محوری مقاله را در یک جملهٔ کوتاه و دقیق فارسی مشخص کن.",
   },
   whyItMatters: {
     enabled: true,
     instruction: WHY_IT_MATTERS_DEFAULT_INSTRUCTION,
   },
-  hashtags: { enabled: true, instruction: "سه تا پنج هشتگ مرتبط با خبر را در فیلد hashtags به صورت یک رشته با فاصله جدا کن؛ مثال: #بازار_سهام #نقدینگی. هشتگ را داخل خلاصه ننویس و بک‌اسلش اضافه نکن." },
+  hashtags: {
+    enabled: true,
+    instruction:
+      "سه تا پنج هشتگ فارسی تخصصی و مرتبط با موضوع اقتصادی مقاله را در فیلد hashtags به صورت یک رشته با فاصله جدا کن؛ مثال: #اقتصاد_کلان #سیاست_پولی #تجارت_جهانی. هشتگ را داخل خلاصه ننویس و بک‌اسلش اضافه نکن.",
+  },
   entities: {
     enabled: true,
     instruction:
-      "نام بانک‌ها، شرکت‌ها، نهادها و سازمان‌هایی که خبر دربارهٔ آن‌هاست را به فارسی در آرایهٔ entities بیاور (حداکثر ۱۲ مورد). اگر نام مشخصی در خبر نیست، آرایهٔ خالی بده.",
+      "نام بانک‌های مرکزی، نهادهای بین‌المللی (مانند صندوق بین‌المللی پول، فدرال رزرو، بانک جهانی، بانک مرکزی اروپا)، کشورها یا سازمان‌های مهم مطرح در مقاله را به فارسی در آرایهٔ entities بیاور (حداکثر ۱۰ مورد). اگر نام مشخصی نیست، آرایهٔ خالی بده.",
   },
   shouldSend: {
     enabled: true,
-    instruction: "مشخص کن که آیا این خبر باید به کانال هدف ارسال شود یا نه.",
+    instruction:
+      "مشخص کن که آیا ترجمه و خلاصهٔ این مقاله ارزش علمی/تحلیلی کافی برای ارسال به کانال اقتصادی در پیام‌رسان «بله» را دارد یا نه.",
   },
   reason: {
     enabled: true,
-    instruction: "توضیح کوتاهی (۱۵ تا ۳۰ کلمه) برای دلیل ارسال یا عدم ارسال ارائه بده.",
+    instruction:
+      "توضیح کوتاهی به فارسی (۱۵ تا ۳۰ کلمه) برای دلیل پیشنهاد ارسال یا عدم ارسال ارائه بده.",
   },
 };
 
-/** Mirrors the exact threshold baked into the previous hard-coded prompt: importance>=70 OR relevance>=70. */
+/** Default decision rules: AND semantics (importance >= 65 AND relevance >= 70). */
 export const DEFAULT_DECISION_RULES: AiDecisionRules = {
-  minImportanceToSend: 70,
+  minImportanceToSend: 65,
   minRelevanceToSend: 70,
   minNoveltyToSend: 0,
-  // AND semantics: importance and relevance must BOTH pass. The previous
-  // default (OR) recommended important-but-irrelevant articles.
   combine: "all",
   overallSendThreshold: 70,
   enableAutoRecommendation: true,
 };
 
 export const DEFAULT_OUTPUT_SCHEMA: AiOutputSchema = [
-  { name: "summary", enabled: true, description: "خلاصه فارسی مقاله", required: true, type: "string" },
-  { name: "category", enabled: true, description: "دسته‌بندی فارسی", required: true, type: "string" },
-  { name: "importance", enabled: true, description: "امتیاز اهمیت", required: true, type: "number", min: 0, max: 100 },
-  { name: "relevance", enabled: true, description: "امتیاز مرتبط بودن", required: true, type: "number", min: 0, max: 100 },
-  { name: "novelty", enabled: true, description: "امتیاز تازگی", required: true, type: "number", min: 0, max: 100 },
-  { name: "mainEvent", enabled: true, description: "رویداد اصلی", required: false, type: "string" },
-  { name: "whyItMatters", enabled: true, description: "چرا برای مخاطب مهم است", required: false, type: "string" },
-  { name: "hashtags", enabled: true, description: "هشتگ‌های مستقل؛ متن جداشده با فاصله، مانند #بازار_سهام #نقدینگی", required: false, type: "string" },
-  { name: "entities", enabled: true, description: "نام بانک‌ها/شرکت‌ها/نهادهای مهم خبر (فارسی، آرایه‌ای)", required: false, type: "string" },
-  { name: "shouldSend", enabled: true, description: "پیشنهاد ارسال", required: true, type: "boolean" },
+  { name: "translatedTitle", enabled: true, description: "ترجمه فارسی عنوان مقاله", required: true, type: "string" },
+  { name: "summary", enabled: true, description: "خلاصه و ترجمه تحلیلی فارسی مقاله", required: true, type: "string" },
+  { name: "category", enabled: true, description: "دسته‌بندی تخصصی اقتصادی (فارسی)", required: true, type: "string" },
+  { name: "importance", enabled: true, description: "امتیاز اهمیت علمی/اقتصادی", required: true, type: "number", min: 0, max: 100 },
+  { name: "relevance", enabled: true, description: "امتیاز مرتبط بودن با اقتصاد تحلیلی", required: true, type: "number", min: 0, max: 100 },
+  { name: "novelty", enabled: true, description: "امتیاز تازگی دیدگاه/یافته‌ها", required: true, type: "number", min: 0, max: 100 },
+  { name: "mainEvent", enabled: true, description: "تز یا محور اصلی مقاله (فارسی)", required: false, type: "string" },
+  { name: "whyItMatters", enabled: true, description: "چرا از نظر اقتصادی مهم است", required: false, type: "string" },
+  { name: "hashtags", enabled: true, description: "هشتگ‌های فارسی مستقل؛ جداشده با فاصله، مانند #اقتصاد_کلان #سیاست_پولی", required: false, type: "string" },
+  { name: "entities", enabled: true, description: "نهادها، بانک‌های مرکزی و سازمان‌های مهم مقاله (فارسی، آرایه‌ای)", required: false, type: "string" },
+  { name: "shouldSend", enabled: true, description: "پیشنهاد ارسال به بله", required: true, type: "boolean" },
   { name: "reason", enabled: true, description: "دلیل تصمیم ارسال", required: true, type: "string" },
 ];
 
 /**
- * Default publishing layout. Kept IDENTICAL in spirit to the pre-M8 hard-coded
- * message (see src/lib/delivery/message.ts) so nothing changes visually for
- * existing users; it merely becomes editable from the Configuration Center.
+ * Default publishing layout for Bale: bilingual title (Persian + original
+ * English headline) followed by fluent Persian analytical summary, economic
+ * significance, core thesis, score, source link, and Persian hashtags.
  */
 export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
 
-{title}
+{bilingualTitle}
 
 {summary}
 
 چرا مهم است:
 {whyItMatters}
 
-رویداد اصلی:
+محور اصلی مقاله:
 {mainEvent}
 
 اهمیت: {importanceScore} از ۱۰۰
@@ -395,13 +397,13 @@ export function upgradeLegacyTemplateFooter(template: string): string {
   return template.replace(LEGACY_TEMPLATE_FOOTER, "{originalUrl}");
 }
 
-export const DEFAULT_CONFIG_NAME = "پیکربندی پیش‌فرض";
+export const DEFAULT_CONFIG_NAME = "پیکربندی مقالات اقتصادی انگلیسی (پیش‌فرض)";
 export const DEFAULT_MODEL_PLACEHOLDER = ""; // empty => env AI_API_MODEL / AI_MODEL / built-in fallback
 
 /**
  * Default topic filter — INACTIVE and failing open: existing installations keep
- * ingesting and analyzing everything exactly as before until an admin enables
- * topics from the dashboard.
+ * ingesting and analyzing everything until an admin enables topics or applies
+ * the English Economics Pack from the dashboard.
  */
 export const DEFAULT_TOPIC_FILTER: AiTopicFilterConfig = {
   enabled: false,
@@ -412,24 +414,18 @@ export const DEFAULT_TOPIC_FILTER: AiTopicFilterConfig = {
 
 /**
  * Default auto-send policy — `useCustom: false` so the AUTO_SEND_* environment
- * variables keep deciding (zero behavior change for existing deployments).
+ * variables keep deciding unless customized in the dashboard.
  */
 export const DEFAULT_AUTO_SEND_POLICY: AiAutoSendPolicy = {
   useCustom: false,
   enabled: true,
   destination: "local",
-  minImportance: 50,
-  minRelevance: 50,
+  minImportance: 60,
+  minRelevance: 65,
   minNovelty: 0,
   requireAiRecommendation: false,
   categories: null,
   maxItemsPerPass: 20,
 };
 export const DEFAULT_TEMPERATURE = 0.2;
-// Reasoning-style models (e.g. openai/gpt-oss-20b on Groq) spend a large,
-// variable number of hidden "thinking" tokens before emitting the final JSON.
-// The composed prompt (system prompt + per-feature instructions + decision
-// rules + output contract) is longer than the original Milestone 4 prompt, so
-// this default must stay generous enough that analysis keeps working exactly
-// as before — verified empirically against the configured provider/model.
-export const DEFAULT_MAX_TOKENS = 3000;
+export const DEFAULT_MAX_TOKENS = 3500;

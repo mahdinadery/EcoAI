@@ -25,7 +25,7 @@ import { BulletinConfigPanel } from "./bulletin-config-panel";
 import { KeywordListEditor } from "./keyword-list-editor";
 import { BASELINE_BLOCKED_KEYWORDS } from "@/lib/news/topic-filter";
 import { PUBLISHING_TEMPLATE_VARS, findUnknownTemplateVars } from "@/lib/delivery/template";
-import { CREDIT_RATING_PACK } from "@/lib/news/news-packs";
+import { ENGLISH_ECONOMICS_PACK } from "@/lib/news/news-packs";
 import { TOPIC_PRESETS } from "@/lib/news/topic-filter";
 import { AiConfigFeatureRow } from "./ai-config-feature-row";
 import { AiConfigOutputFieldRow } from "./ai-config-output-field-row";
@@ -36,27 +36,29 @@ import { AiConfigTopicRow } from "./ai-config-topic-row";
 import { AiConfigVersionHistory } from "./ai-config-version-history";
 
 /**
- * Generic quick-add presets plus the credit-rating domain topics (the same
- * topics the one-click «بسته خبری اعتبارسنجی» applies, offered individually).
+ * Quick-add presets plus the English analytical economics domain topics.
  */
 const ALL_TOPIC_PRESETS = [
   ...TOPIC_PRESETS,
-  ...CREDIT_RATING_PACK.topics.map((topic) => ({ label: topic.label, keywords: [...topic.keywords] })),
+  ...ENGLISH_ECONOMICS_PACK.topics.map((topic) => ({ label: topic.label, keywords: [...topic.keywords] })),
 ];
 
 /**
- * Starter deny-list keywords: the kinds of news a credit-rating audience never
- * wants. They apply in BOTH filter modes, before the AI stage.
+ * Starter deny-list keywords: off-topic noise an economics channel never wants.
+ * They apply in BOTH filter modes, before the AI stage.
  */
 const BLOCKED_KEYWORD_PRESETS = [
+  "nfl",
+  "nba",
+  "premier league",
+  "celebrity gossip",
+  "horoscope",
+  "movie review",
   "ورزش",
   "فوتبال",
-  "لیگ برتر",
   "سرگرمی",
-  "هنرمندان",
   "سینما",
   "حوادث",
-  "تصادف",
 ];
 
 type Props = { adminKey: string };
@@ -67,9 +69,7 @@ type Props = { adminKey: string };
 const LOCKED_FEATURES: AiFeatureKey[] = ["summary", "shouldSend"];
 
 /**
- * Roadmap Phase 2 task #5: one-click analyst presets. Each fills the system
- * prompt, audience focus, AND the score thresholds together (the operator
- * still reviews and saves — a preset never persists anything by itself).
+ * One-click analyst presets for English economic articles & Persian translation.
  */
 const ANALYST_PRESETS: Array<{
   key: string;
@@ -80,32 +80,30 @@ const ANALYST_PRESETS: Array<{
   minRelevance: number;
 }> = [
   {
-    key: "credit",
-    label: "تحلیلگر اعتبارسنجی",
-    systemPrompt:
-      "تو یک تحلیلگر خبرهٔ حوزهٔ اعتبارسنجی و رتبه‌بندی اعتباری هستی. هر خبر را از دید یک شرکت اعتبارسنجی تحلیل کن: تأثیر بر مدل‌های رتبه‌بندی، ریسک اعتباری ناشران و بانک‌ها، بازار بدهی، و مقررات نظارتی. خلاصه را دقیق و فنی بنویس، اهمیت و مرتبط بودن را صادقانه امتیاز بده و فقط خبرهایی را برای ارسال توصیه کن که برای مخاطب حرفه‌ای اعتبارسنجی ارزش عملی داشته باشند.",
-    audienceFocus:
-      "مخاطب، شرکت‌های اعتبارسنجی و تحلیلگران ریسک اعتباری هستند. خبر مرتبط یعنی: اعتبارسنجی، رتبه‌بندی اعتباری، ریسک اعتباری، سلامت مالی ناشران، بازار بدهی ایران، مقررات نظارتی بانک مرکزی/بورس دربارهٔ اعتبار. اخبار عمومی اقتصادی، قیمت و تورم روزمره، ورزشی، حوادث و سرگرمی بی‌ربط‌اند.",
-    minImportance: 70,
-    minRelevance: 70,
-  },
-  {
-    key: "capital",
-    label: "تحلیلگر بازار سرمایه",
-    systemPrompt:
-      "تو یک تحلیلگر بازار سرمایه هستی. هر خبر را از دید سرمایه‌گذاران و نهادهای مالی تحلیل کن: تأثیر بر شاخص‌ها، صنایع، ناشران بورسی، ابزارهای مالی و جریان نقدینگی. خلاصه را دقیق بنویس، اهمیت و مرتبط بودن را صادقانه امتیاز بده و فقط خبرهای اثرگذار بر تصمیم سرمایه‌گذاری را برای ارسال توصیه کن.",
-    audienceFocus:
-      "مخاطب، سرمایه‌گذاران و تحلیلگران بازار سرمایهٔ ایران هستند. خبر مرتبط یعنی: بورس و فرابورس، ناشران بورسی، صکوک و ابزارهای مالی، سیاست‌های پولی-مالی اثرگذار بر بازار، عرضه‌های اولیه، گزارش‌های مالی شرکت‌ها. اخبار بی‌ربط روزمره، ورزشی و سرگرمی بی‌ربط‌اند.",
+    key: "analytical-econ",
+    label: "مترجم و تحلیلگر مقالات اقتصادی (پیش‌فرض)",
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    audienceFocus: DEFAULT_AUDIENCE_FOCUS,
     minImportance: 65,
     minRelevance: 70,
   },
   {
-    key: "insurance",
-    label: "تحلیلگر بیمه",
+    key: "central-banks-macro",
+    label: "تحلیلگر اقتصاد کلان و بانک‌های مرکزی",
     systemPrompt:
-      "تو یک تحلیلگر صنعت بیمه هستی. هر خبر را از دید شرکت‌های بیمه و نهاد ناظر تحلیل کن: تأثیر بر ترکیب پرتفوی، خسارت‌ها، آیین‌نامه‌های بیمه مرکزی، فناوری بیمه و بازار سرمایهٔ بیمه‌ای. خلاصه را دقیق بنویس، اهمیت و مرتبط بودن را صادقانه امتیاز بده و فقط خبرهای اثرگذار بر صنعت بیمه را برای ارسال توصیه کن.",
+      "تو یک اقتصاددان کلان و مترجم تخصصی مقالات بانک‌های مرکزی (Fed، ECB، IMF، BIS) هستی. هر مقالهٔ انگلیسی را با تمرکز بر نرخ بهره، تورم، سیاست پولی، پایداری بدهی دولت و چرخه‌های تجاری به فارسی روان ترجمه و خلاصه کن. عنوان را دقیق ترجمه کن و فقط مقالات دارای استدلال و شواهد تحلیلی قوی را برای ارسال به کانال بله توصیه کن.",
     audienceFocus:
-      "مخاطب، شرکت‌های بیمه، بیمه مرکزی و تحلیلگران صنعت بیمه هستند. خبر مرتبط یعنی: بیمهٔ زندگی و غیرزندگی، خسارت و اتکایی، آیین‌نامه‌های بیمه مرکزی، تحولات فناوری بیمه، عملکرد مالی شرکت‌های بیمه. اخبار عمومی اقتصادی، ورزشی و حوادث بی‌ربط‌اند.",
+      "مخاطب، اقتصاددانان کلان، پژوهشگران پولی-بانکی و سیاست‌گذاران هستند. مطالب مرتبط: سیاست پولی، نرخ بهره، تورم، سیاست مالی، کسری بودجه، رشد اقتصادی و یادداشت‌های پژوهشی بانک‌های مرکزی. اخبار کوتاه روزمره بدون تحلیل، ورزشی و سرگرمی بی‌ربط‌اند.",
+    minImportance: 65,
+    minRelevance: 70,
+  },
+  {
+    key: "global-trade-markets",
+    label: "تحلیلگر تجارت جهانی، انرژی و بازارها",
+    systemPrompt:
+      "تو یک تحلیلگر اقتصاد بین‌الملل، ژئواکونومیک و بازارهای مالی جهانی هستی. مقالات انگلیسی را با تمرکز بر تجارت جهانی، تعرفه‌ها، زنجیرهٔ تأمین، بازارهای انرژی و کالا، جریان سرمایه و ثبات مالی تحلیل، خلاصه و به فارسی سلیس ترجمه کن و پیامدهای راهبردی هر مقاله را روشن بنویس.",
+    audienceFocus:
+      "مخاطب، تحلیلگران اقتصاد بین‌الملل، تجارت خارجی، انرژی و بازارهای مالی جهانی هستند. مطالب مرتبط: تعرفه‌ها و سیاست صنعتی، زنجیرهٔ تأمین جهانی، تحریم‌ها و ژئواکونومیک، بازار نفت/گاز/کالا، بازار اوراق و ارزهای جهانی. اخبار زرد، ورزشی و سرگرمی بی‌ربط‌اند.",
     minImportance: 65,
     minRelevance: 70,
   },
@@ -477,10 +475,10 @@ export function AiConfigConsole({ adminKey }: Props) {
         <div className="mt-5">
           <h3 className="text-sm font-bold text-ink">تمرکز مخاطب (ملاک امتیاز مرتبط بودن)</h3>
           <p className="mt-1 text-xs leading-5 text-muted">
-            مشخص کنید خبر «مرتبط» یعنی چه. اگر خالی بماند، تعریف پیش‌فرض استفاده می‌شود: مخاطب هدف،{" "}
-            <b>شرکت اعتبارسنجی</b> است و فقط اخبار اعتبارسنجی/رتبه‌بندی اعتباری/ریسک اعتباری مرتبط محسوب می‌شوند. این
-            متن همراه قوانین قطعی («خبر بی‌ربط باید relevance زیر ۳۰ بگیرد، حتی اگر بسیار مهم باشد») به همهٔ درخواست‌های
-            تحلیل اضافه می‌شود — پس از ذخیره، روی همهٔ نسخه‌ها اثر دارد.
+            مشخص کنید چه نوع مقالات و تحلیل‌هایی «مرتبط» محسوب می‌شوند. اگر خالی بماند، تعریف پیش‌فرض استفاده می‌شود:
+            مخاطب هدف، <b>اقتصاددانان، پژوهشگران و تحلیلگران بازار</b> هستند و مقالات تحلیلی اقتصادی انگلیسی در اولویت
+            قرار دارند. این متن همراه قوانین قطعی («مطلب غیراقتصادی باید relevance زیر ۳۰ بگیرد، حتی اگر مهم باشد») به
+            همهٔ درخواست‌های تحلیل اضافه می‌شود.
           </p>
           <textarea
             className="mt-2 w-full resize-y rounded-xl border border-line px-3 py-2.5 text-sm leading-6 text-ink-soft focus:border-accent focus:outline-none"

@@ -298,8 +298,9 @@ export function validateAiConfigInput(input: AiConfigInput): ConfigValidationRes
       errors.push("حداقل باید یک ویژگی تحلیل فعال باشد.");
     }
 
-    for (const key of featureKeys) {
+    for (const key of AI_FEATURE_ORDER) {
       const feature = input.features[key];
+      if (!feature) continue;
       if (feature.enabled && !feature.instruction?.trim()) {
         errors.push(`دستورالعمل ویژگی «${key}» نمی‌تواند خالی باشد.`);
       }

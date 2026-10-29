@@ -226,7 +226,7 @@ export async function POST(request: Request) {
 
       if (applied.failed > 0) {
         response.warnings.push(
-          "برخی منابع از سرور شما در دسترس نبودند؛ برای منابع ایرانیِ مسدود از NEWS_FETCH_PROXY_URL یا «ورود دستی RSS» استفاده کنید.",
+          "برخی فیدهای RSS در این لحظه پاسخ ندادند یا محدودیت دسترسی داشتند؛ می‌توانید از NEWS_FETCH_PROXY_URL، «تست مجدد» یا «ورود دستی RSS» استفاده کنید.",
         );
       }
     } catch (error) {

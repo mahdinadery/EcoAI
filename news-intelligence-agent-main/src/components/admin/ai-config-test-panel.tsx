@@ -141,23 +141,42 @@ export function AiConfigTestPanel({ draftConfig, adminKey }: Props) {
 
       {manualMode ? (
         <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-muted">می‌توانید متن انگلیسی یک مقاله اقتصادی را وارد کنید یا نمونه زیر را تست کنید:</span>
+            <button
+              className="rounded-lg border border-brand-line bg-brand-soft/60 px-2.5 py-1 text-xs font-semibold text-brand-ink hover:bg-brand-soft"
+              onClick={() => {
+                setManualTitle("Why Higher Neutral Interest Rates Are Reshaping Global Fiscal Policy");
+                setManualDescription(
+                  "Across advanced and emerging economies, structural shifts in demographics, defense spending, and green investment are pushing the neutral real rate of interest (r-star) above pre-pandemic lows. As debt-servicing costs rise faster than nominal GDP growth in several major economies, fiscal authorities can no longer rely on ultra-low borrowing rates to stabilize debt-to-GDP ratios, forcing a reassessment of medium-term fiscal frameworks and central bank independence.",
+                );
+                setManualSource("IMF Blog");
+              }}
+              type="button"
+            >
+              درج نمونه مقاله اقتصادی انگلیسی
+            </button>
+          </div>
           <input
             className="w-full rounded-lg border border-line px-3 py-2 text-sm focus:border-brand focus:outline-none"
+            dir="auto"
             onChange={(event) => setManualTitle(event.target.value)}
-            placeholder="عنوان خبر آزمایشی"
+            placeholder="عنوان مقاله انگلیسی (مثلاً: Why Higher Neutral Interest Rates Are Reshaping Fiscal Policy)"
             value={manualTitle}
           />
           <textarea
             className="w-full resize-y rounded-lg border border-line px-3 py-2 text-sm focus:border-brand focus:outline-none"
+            dir="auto"
             onChange={(event) => setManualDescription(event.target.value)}
-            placeholder="متن/توضیحات خبر"
-            rows={3}
+            placeholder="متن یا چکیده انگلیسی مقاله..."
+            rows={4}
             value={manualDescription}
           />
           <input
             className="w-full rounded-lg border border-line px-3 py-2 text-sm focus:border-brand focus:outline-none"
+            dir="auto"
             onChange={(event) => setManualSource(event.target.value)}
-            placeholder="منبع (اختیاری)"
+            placeholder="منبع (مثلاً: Project Syndicate / IMF Blog / VoxEU)"
             value={manualSource}
           />
         </div>

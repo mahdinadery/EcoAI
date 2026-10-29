@@ -22,7 +22,14 @@ const PERSIAN_STOPWORDS = new Set([
   "دو", "سه", "و", "یا", "اما", "تا", "پس", "هم", "طی", "وی",
   "توسط", "شده", "یافت", "یافته", "داد", "داده", "کرد", "کردن", "گفت", "افزود",
   "می‌شود", "می‌کند", "می‌دهد", "خواهد", "شدند", "شوند", "نبود", "استاندارد",
+  // English stopwords for English economic articles & news headlines
   "the", "and", "for", "with", "from", "that", "this", "was", "are", "has",
+  "have", "had", "been", "were", "will", "would", "could", "should", "into",
+  "over", "under", "after", "before", "about", "amid", "amidst", "among",
+  "between", "through", "during", "against", "without", "within", "what",
+  "when", "where", "which", "while", "whose", "their", "there", "these",
+  "those", "they", "them", "more", "most", "some", "such", "than", "then",
+  "only", "also", "very", "just", "says", "said", "does", "why", "how",
 ]);
 
 /**

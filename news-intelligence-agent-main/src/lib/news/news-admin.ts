@@ -39,7 +39,14 @@ function buildWhere(filters: AdminNewsFilters) {
 
   if (filters.q?.trim()) {
     const pattern = `%${filters.q.trim().slice(0, 120)}%`;
-    conditions.push(or(ilike(news.title, pattern), ilike(news.url, pattern), ilike(news.source, pattern)));
+    conditions.push(
+      or(
+        ilike(news.title, pattern),
+        ilike(news.translatedTitle, pattern),
+        ilike(news.url, pattern),
+        ilike(news.source, pattern),
+      ),
+    );
   }
   if (filters.sourceId) conditions.push(eq(news.sourceId, filters.sourceId));
   if (filters.category) conditions.push(eq(news.category, filters.category));

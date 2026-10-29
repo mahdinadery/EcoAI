@@ -172,7 +172,7 @@ export async function loadMessageExtras(article: NewsRow): Promise<MessageExtras
     const entityTags = article.entityTags ?? [];
     if (article.similarityKey || entityTags.length > 0) {
       const delivered = await db
-        .select({ title: news.title })
+        .select({ title: news.title, translatedTitle: news.translatedTitle })
         .from(news)
         .innerJoin(deliveries, eq(deliveries.newsId, news.id))
         .where(
@@ -187,7 +187,9 @@ export async function loadMessageExtras(article: NewsRow): Promise<MessageExtras
         )
         .orderBy(desc(deliveries.sentAt))
         .limit(2);
-      if (delivered.length > 0) extras.relatedTitles = delivered.map((row) => row.title);
+      if (delivered.length > 0) {
+        extras.relatedTitles = delivered.map((row) => row.translatedTitle?.trim() || row.title);
+      }
     }
   } catch (error) {
     console.error("[message-extras] lookup failed:", String(error).slice(0, 160));

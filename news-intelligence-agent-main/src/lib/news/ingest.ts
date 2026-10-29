@@ -125,12 +125,13 @@ export async function getAiTokenUsageStats(): Promise<AiTokenUsageSummary> {
 export type NewsListItem = {
   id: string;
   title: string;
+  translatedTitle: string | null;
   url: string;
   source: string;
   description: string | null;
   publishedAt: string | null;
 
-  // AI analysis fields (Milestone 4)
+  // AI analysis fields (Milestone 4+)
   summary: string | null;
   category: string | null;
   importanceScore: number | null;
@@ -147,6 +148,7 @@ export async function listLatestNews(limit = 60): Promise<NewsListItem[]> {
     .select({
       id: news.id,
       title: news.title,
+      translatedTitle: news.translatedTitle,
       url: news.url,
       source: news.source,
       description: news.description,
@@ -168,6 +170,7 @@ export async function listLatestNews(limit = 60): Promise<NewsListItem[]> {
   return rows.map((row) => ({
     id: row.id,
     title: row.title,
+    translatedTitle: row.translatedTitle,
     url: row.url,
     source: row.source,
     description: row.description,

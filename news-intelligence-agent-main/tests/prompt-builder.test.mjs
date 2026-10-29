@@ -4,12 +4,13 @@ import test from "node:test";
 import { DEFAULT_AUDIENCE_FOCUS, buildAIAnalysisPrompt, describeTopicFocus } from "../src/lib/ai/prompt-builder.ts";
 
 const features = {
-  summary: { enabled: true, instruction: "خلاصه بنویس." },
+  translatedTitle: { enabled: true, instruction: "ترجمه فارسی عنوان." },
+  summary: { enabled: true, instruction: "خلاصه تحلیلی بنویس." },
   shouldSend: { enabled: true, instruction: "توصیه ارسال بده." },
 };
 
 const decisionRules = (overrides = {}) => ({
-  minImportanceToSend: 70,
+  minImportanceToSend: 65,
   minRelevanceToSend: 70,
   minNoveltyToSend: 0,
   overallSendThreshold: 70,
@@ -18,10 +19,11 @@ const decisionRules = (overrides = {}) => ({
 });
 
 const config = (overrides = {}) => ({
-  systemPrompt: "تحلیلگر خبری.",
+  systemPrompt: "تحلیلگر و مترجم اقتصادی.",
   features,
   decisionRules: decisionRules(),
   outputSchema: [
+    { name: "translatedTitle", enabled: true, description: "ترجمه عنوان", required: true, type: "string" },
     { name: "summary", enabled: true, description: "خلاصه", required: true, type: "string" },
     { name: "shouldSend", enabled: true, description: "ارسال", required: true, type: "boolean" },
   ],
@@ -30,10 +32,10 @@ const config = (overrides = {}) => ({
 });
 
 const article = {
-  title: "خبر آزمایشی",
-  description: "متن",
-  source: "تست",
-  publishedAt: null,
+  title: "Why Higher Neutral Interest Rates Are Reshaping Global Fiscal Policy",
+  description: "Structural shifts in demographics and investment are lifting r-star.",
+  source: "IMF Blog",
+  publishedAt: "2026-10-28T10:00:00Z",
 };
 
 test("decision rules default to AND (importance AND relevance)", () => {
@@ -77,54 +79,57 @@ test("the topic focus and deny-list are injected into the prompt", () => {
       topicFilter: {
         enabled: true,
         mode: "include",
-        topics: [{ id: "t1", label: "اعتبارسنجی", enabled: true, keywords: ["رتبه‌بندی اعتباری"] }],
-        blockedKeywords: ["ورزش", "سرگرمی"],
+        topics: [{ id: "t1", label: "سیاست پولی", enabled: true, keywords: ["monetary policy", "inflation"] }],
+        blockedKeywords: ["ورزش", "celebrity gossip"],
       },
     }),
     article,
   );
-  assert.match(systemPrompt, /اعتبارسنجی/);
+  assert.match(systemPrompt, /سیاست پولی/);
+  assert.match(systemPrompt, /monetary policy/);
   assert.match(systemPrompt, /کلیدواژه‌های ممنوع/);
   assert.match(systemPrompt, /ورزش/);
 });
 
-test("the user prompt carries the article content", () => {
-  const { userPrompt } = buildAIAnalysisPrompt(config(), article);
-  assert.match(userPrompt, /خبر آزمایشی/);
-  assert.match(userPrompt, /منبع: تست/);
+test("the user prompt carries the English article title, source, and full content when provided", () => {
+  const { userPrompt } = buildAIAnalysisPrompt(config(), {
+    ...article,
+    content: "Full multi-paragraph economic analysis on neutral interest rates and debt dynamics.",
+  });
+  assert.match(userPrompt, /Why Higher Neutral Interest Rates/);
+  assert.match(userPrompt, /منبع: IMF Blog/);
+  assert.match(userPrompt, /چکیده فید:/);
+  assert.match(userPrompt, /متن مقاله:/);
+  assert.match(userPrompt, /Full multi-paragraph economic analysis/);
 });
 
 test("only enabled features appear in the output contract", () => {
   const { systemPrompt, enabledFields } = buildAIAnalysisPrompt(config(), article);
-  assert.deepEqual(enabledFields, ["summary", "shouldSend"]);
+  assert.deepEqual(enabledFields, ["translatedTitle", "summary", "shouldSend"]);
+  assert.match(systemPrompt, /"translatedTitle"/);
   assert.match(systemPrompt, /"summary"/);
   assert.match(systemPrompt, /"shouldSend"/);
   assert.doesNotMatch(systemPrompt, /"importance"/);
 });
 
-// ── Audience focus & relevance anchor ─────────────────────────────────────────
-
-test("default audience focus anchors relevance to the credit-rating audience", () => {
+test("default audience focus anchors relevance to analytical economics & English research", () => {
   const { systemPrompt } = buildAIAnalysisPrompt(config(), article);
   assert.ok(systemPrompt.includes("تعریف مخاطب و ملاک امتیاز مرتبط بودن"));
   assert.ok(systemPrompt.includes(DEFAULT_AUDIENCE_FOCUS));
-  assert.ok(systemPrompt.includes("شرکت اعتبارسنجی"));
-  // Disambiguation: government budget allocation / Kalabarg / road & bridge is NOT credit rating.
-  assert.ok(systemPrompt.includes("تخصیص اعتبار کالابرگ"));
-  assert.ok(systemPrompt.includes("تخصیص اعتبار ساخت جاده و پل"));
-  // Hard rules: importance never compensates for low relevance.
+  assert.ok(systemPrompt.includes("اقتصاددانان"));
+  assert.ok(systemPrompt.includes("سیاست پولی"));
+  assert.ok(systemPrompt.includes("IMF"));
   assert.ok(systemPrompt.includes("relevance زیر ۳۰"));
-  assert.ok(systemPrompt.includes("باید relevance پایین و shouldSend=false بگیرد") || systemPrompt.includes("shouldSend=false بگیرد"));
+  assert.ok(systemPrompt.includes("shouldSend=false"));
 });
 
 test("custom audience focus replaces the default", () => {
   const { systemPrompt } = buildAIAnalysisPrompt(
-    config({ audienceFocus: "مخاطب هدف، تحلیلگران بازار سرمایه هستند." }),
+    config({ audienceFocus: "مخاطب هدف، پژوهشگران تجارت بین‌الملل هستند." }),
     article,
   );
-  assert.ok(systemPrompt.includes("مخاطب هدف، تحلیلگران بازار سرمایه هستند."));
+  assert.ok(systemPrompt.includes("مخاطب هدف، پژوهشگران تجارت بین‌الملل هستند."));
   assert.ok(!systemPrompt.includes(DEFAULT_AUDIENCE_FOCUS));
-  // The hard relevance rules are present for every audience.
   assert.ok(systemPrompt.includes("قوانین قطعی امتیاز مرتبط بودن"));
 });
 
@@ -135,10 +140,10 @@ test("blank audience focus falls back to the default", () => {
 
 test("baseline deny-list keywords are described in the prompt when passed in", () => {
   const { systemPrompt } = buildAIAnalysisPrompt(config(), article, {
-    baselineBlockedKeywords: ["ورزش", "حوادث"],
+    baselineBlockedKeywords: ["nfl", "ورزش", "حوادث"],
   });
   assert.ok(systemPrompt.includes("کلیدواژه‌های ممنوع همیشگی"));
-  assert.ok(systemPrompt.includes("ورزش، حوادث"));
+  assert.ok(systemPrompt.includes("nfl، ورزش، حوادث"));
 });
 
 test("prompt without any topic focus omits the topic section but keeps the audience block", () => {
@@ -149,10 +154,10 @@ test("prompt without any topic focus omits the topic section but keeps the audie
 
 test("describeTopicFocus combines baseline and config deny-lists", () => {
   const text = describeTopicFocus(
-    { enabled: true, mode: "include", topics: [], blockedKeywords: ["قیمت ارز"] },
+    { enabled: true, mode: "include", topics: [], blockedKeywords: ["horoscope"] },
     ["ورزش"],
   );
   assert.ok(text.includes("کلیدواژه‌های ممنوع همیشگی"));
   assert.ok(text.includes("ورزش"));
-  assert.ok(text.includes("قیمت ارز"));
+  assert.ok(text.includes("horoscope"));
 });

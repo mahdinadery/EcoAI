@@ -53,10 +53,11 @@ function clean(value: string | undefined): string {
 
   // CDATA wrappers are common in BBC/Reuters style feeds for title + description.
   output = output.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
-  // Feed descriptions contain inline HTML (<a>, <img>, entities).
+  // Feed descriptions contain inline HTML (<a>, <img>, entities) — both raw and entity-encoded (`&lt;p&gt;`).
   output = output.replace(/<[^>]*>/g, " ");
   output = decodeEntities(output);
   output = decodeEntities(output); // feeds sometimes double-encode (`&amp;#8238;`)
+  output = output.replace(/<\/?[a-zA-Z!][^>]*>/g, " ");
   return output.replace(/\s+/g, " ").trim();
 }
 
@@ -127,6 +128,13 @@ function parsePublishedAt(value: string | undefined): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function atomAlternateLink(block: string): string | undefined {
+  const alternate =
+    /<link\b[^>]*\brel\s*=\s*["']alternate["'][^>]*\bhref\s*=\s*["']([^"']+)["']/i.exec(block)?.[1] ??
+    /<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\brel\s*=\s*["']alternate["']/i.exec(block)?.[1];
+  return alternate ? alternate.replace(/&amp;/g, "&") : undefined;
+}
+
 /**
  * Parses a feed body into normalized items.
  * Malformed items (missing title or a non-HTTP link) are skipped and counted.
@@ -137,7 +145,10 @@ export function parseFeed(xml: string, fallbackSource: string): {
   skipped: number;
 } {
   const channelBlock = /<channel[\s>][\s\S]*?<\/channel>/i.exec(xml)?.[0] ?? xml;
-  const channelTitle = clean(field(channelBlock, "title")).slice(0, 120);
+  const headerSlice = /<(?:item|entry)[\s>]/i.exec(channelBlock)
+    ? channelBlock.slice(0, /<(?:item|entry)[\s>]/i.exec(channelBlock)!.index)
+    : channelBlock;
+  const channelTitle = clean(field(headerSlice, "title") ?? field(channelBlock, "title")).slice(0, 120);
   const source = channelTitle || fallbackSource || "unknown";
 
   const blocks = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) ?? xml.match(/<entry[\s>][\s\S]*?<\/entry>/gi) ?? [];
@@ -150,6 +161,7 @@ export function parseFeed(xml: string, fallbackSource: string): {
     const title = clean(field(block, "title")).slice(0, MAX_TITLE_LENGTH);
     const link =
       clean(field(block, "link")) ||
+      atomAlternateLink(block) ||
       attribute(block, "link", "href") ||
       clean(field(block, "guid")) ||
       "";
@@ -162,9 +174,9 @@ export function parseFeed(xml: string, fallbackSource: string): {
 
     seen.add(link);
 
-    const description = clean(field(block, "description"))
+    const description = clean(field(block, "description") ?? field(block, "summary"))
       .slice(0, MAX_DESCRIPTION_LENGTH)
-        .trim();
+      .trim();
 
     const imageUrl =
       attribute(block, "media:thumbnail", "url") ??
@@ -182,13 +194,15 @@ export function parseFeed(xml: string, fallbackSource: string): {
       clean(/<author[^>]*>([\s\S]*?)<\/author>/i.exec(block)?.[1]) ||
       "";
 
-    const fullContent = clean(field(block, "content:encoded")).slice(0, 20_000);
+    const fullContent = clean(field(block, "content:encoded") ?? field(block, "content")).slice(0, 20_000);
 
     items.push({
       title,
       url: link,
       source,
-      publishedAt: parsePublishedAt(field(block, "pubDate") ?? field(block, "updated")),
+      publishedAt: parsePublishedAt(
+        field(block, "pubDate") ?? field(block, "published") ?? field(block, "updated") ?? field(block, "dc:date"),
+      ),
       description: description || null,
       imageUrl: imageUrl && isHttpUrl(imageUrl) ? imageUrl : null,
       externalId,

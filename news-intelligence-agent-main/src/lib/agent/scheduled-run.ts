@@ -233,10 +233,9 @@ async function sendBulletin(
 
   const intro = await synthesizeBulletinBrief(
     items.map((item) => ({
-      title: item.title,
+      title: item.translatedTitle?.trim() ? `${item.translatedTitle} (${item.title})` : item.title,
       oneLiner: item.summary,
       whyItMatters: item.whyItMatters,
-      hashtags: item.hashtags,
     })),
     { model: aiConfig.model, enabled: bulletin.aiIntro, introPrompt: bulletin.introPrompt, maxTokens: bulletin.introMaxTokens },
   );
@@ -247,6 +246,7 @@ async function sendBulletin(
     items: items.map((item) => ({
       id: item.id,
       title: item.title,
+      translatedTitle: item.translatedTitle,
       oneLiner: item.summary,
       whyItMatters: item.whyItMatters,
       hashtags: item.hashtags,

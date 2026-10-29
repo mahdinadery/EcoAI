@@ -1,10 +1,10 @@
 /**
- * Publishing template rendering (Milestone 8).
+ * Publishing template rendering (Milestone 8+).
  *
- * News + AI analysis + a configurable template -> the delivery artifact.
- * Formatting is deliberately NOT inside the AI service: the AI decides, this
- * layer composes. The rendered text is stored on the delivery row, so later
- * edits never change the news or the analysis.
+ * News + AI translation/analysis + a configurable template -> the Bale/Local
+ * delivery artifact. Formatting is deliberately NOT inside the AI service: the
+ * AI translates and analyzes, this layer composes. The rendered text is stored
+ * on the delivery row, so later edits never mutate the news or the analysis.
  *
  * Unknown placeholders are left visible rather than silently dropped, so a
  * typo in the admin template is obvious instead of producing a blank message.
@@ -12,10 +12,20 @@
 
 import type { NewsRow } from "@/db/schema";
 import { sanitizeWhyItMatters } from "../ai/why-guard";
-import { buildNewsMessage, escapeMd, mdLink, stripEmptyLabelBlocks, type MessageExtras } from "./message";
+import {
+  buildNewsMessage,
+  escapeMd,
+  formatBilingualTitle,
+  mdLink,
+  stripEmptyLabelBlocks,
+  type MessageExtras,
+} from "./message";
 
-/** Only variables that exist on the current data model are supported. */
+/** Variables supported by the publishing template engine. */
 export const PUBLISHING_TEMPLATE_VARS = [
+  "bilingualTitle",
+  "translatedTitle",
+  "originalTitle",
   "title",
   "summary",
   "hashtags",
@@ -34,14 +44,14 @@ export type PublishingTemplateVar = (typeof PUBLISHING_TEMPLATE_VARS)[number];
 
 export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
 
-{title}
+{bilingualTitle}
 
 {summary}
 
 چرا مهم است:
 {whyItMatters}
 
-رویداد اصلی:
+محور اصلی مقاله:
 {mainEvent}
 
 اهمیت: {importanceScore} از ۱۰۰
@@ -50,18 +60,24 @@ export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
 
 {hashtags}`;
 
-const MAX_FIELD_LENGTH = 900;
+const MAX_FIELD_LENGTH = 1500;
 
 function value(varName: PublishingTemplateVar, article: NewsRow): string {
   switch (varName) {
+    case "bilingualTitle":
+      return formatBilingualTitle(article.title, article.translatedTitle, 320);
+    case "translatedTitle":
+      return escapeMd((article.translatedTitle ?? "").trim() || article.normalizedTitle || article.title);
+    case "originalTitle":
+      return escapeMd(article.title);
     case "title":
-      return escapeMd(article.normalizedTitle ?? article.title);
+      return escapeMd((article.translatedTitle ?? "").trim() || article.normalizedTitle || article.title);
     case "hashtags":
       return escapeMd(article.hashtags ?? "");
     case "summary":
       return escapeMd(article.summary ?? "—");
     case "category":
-      return escapeMd(article.category ?? "عمومی");
+      return escapeMd(article.category ?? "اقتصاد");
     case "importanceScore":
     case "relevanceScore":
     case "noveltyScore": {
@@ -76,13 +92,11 @@ function value(varName: PublishingTemplateVar, article: NewsRow): string {
     case "mainEvent":
       return escapeMd(article.mainEvent ?? "");
     case "whyItMatters":
-      // Sanitized at parse time; re-guarded here for legacy rows so template
-      // messages never show the canned filler either.
       return escapeMd(sanitizeWhyItMatters(article.whyItMatters) ?? "");
     case "sourceName":
       return escapeMd(article.source);
     case "originalUrl":
-      // The label «لینک اصلی خبر» IS the hyperlink to the original news URL.
+      // The label «لینک اصلی خبر» IS the hyperlink to the original article URL.
       return mdLink("لینک اصلی خبر", article.url);
     case "publishedAt":
       return article.publishedAt ? article.publishedAt.toISOString().slice(0, 10) : "—";
@@ -96,8 +110,8 @@ function compact(text: string, limit = MAX_FIELD_LENGTH): string {
 
 /**
  * Renders the template against one article. An empty/blank template falls back
- * to the pre-M8 built-in layout so existing configurations (created before the
- * template existed) keep producing exactly the same message as today.
+ * to the built-in layout so older configurations keep producing a complete
+ * message.
  */
 export function renderPublishingMessage(
   template: string | null | undefined,

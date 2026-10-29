@@ -101,7 +101,13 @@ export async function runAiAnalysis(
     if (shadowEnabled) {
       try {
         const raw = JSON.parse(completion.rawText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
-        shadowEvaluation = evaluateShadow(raw.shadow, [article.title, article.description].filter(Boolean).join("\n"), article.publishedAt, Date.now(), config.decisionRules);
+        shadowEvaluation = evaluateShadow(
+          raw.shadow,
+          [article.title, article.description, article.content].filter(Boolean).join("\n"),
+          article.publishedAt,
+          Date.now(),
+          config.decisionRules,
+        );
       } catch {
         shadowEvaluation = evaluateShadow(null, "", article.publishedAt, Date.now(), config.decisionRules);
       }

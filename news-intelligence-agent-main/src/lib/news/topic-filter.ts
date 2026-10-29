@@ -6,8 +6,8 @@
  *   fetch -> parse -> normalize -> dedupe -> [TOPIC FILTER] -> AI -> delivery
  *
  * Deliberately keyword/rule based (NOT an LLM call): matching is a handful of
- * substring checks, so filtering 50 articles costs microseconds instead of a
- * model round-trip. Articles that fail the gate are STORED with the
+ * substring / token checks, so filtering 50 articles costs microseconds instead
+ * of a model round-trip. Articles that fail the gate are STORED with the
  * SKIPPED_OFFTOPIC status (never silently discarded) and can be re-queued from
  * the admin UI after the topics change.
  *
@@ -18,10 +18,9 @@
  * topics.
  *
  * ONE exception is hard-coded on top: BASELINE_BLOCKED_KEYWORDS — a small,
- * conservative deny-list of topics this product must never forward (sports,
- * entertainment, accidents). It applies even when the filter is disabled or
- * absent, because "the bot sent sports news to a credit-rating channel" is
- * never a correct outcome. Operators add their own words via
+ * conservative deny-list of off-topic categories this product must never
+ * forward (sports, entertainment, celebrity gossip, accidents). It applies even
+ * when the filter is disabled or absent. Operators add their own words via
  * `AiTopicFilterConfig.blockedKeywords`.
  */
 
@@ -30,11 +29,20 @@ import type { AiTopicFilterConfig, AiTopicRule } from "@/lib/ai/config-types";
 /**
  * Always-on deny-list (see header). Checked BEFORE the operator configuration,
  * in both modes, even when the topic filter is disabled or not configured.
- * Deliberately tiny and unambiguous: words that can never appear in credit
- * rating / credit risk news for a rating-agency audience. Extend via the
- * configurable `blockedKeywords` deny-list, not by growing this list.
+ * Deliberately conservative and unambiguous in both English and Persian so real
+ * economic articles are never shadowed (short ASCII acronyms like "nfl" are
+ * matched on word boundaries, so "inflation" never false-positives on "nfl").
  */
 export const BASELINE_BLOCKED_KEYWORDS: readonly string[] = [
+  "nfl",
+  "nba",
+  "mlb",
+  "nhl",
+  "premier league",
+  "champions league",
+  "celebrity gossip",
+  "horoscope",
+  "movie review",
   "ورزش",
   "فوتبال",
   "لیگ برتر",
@@ -45,11 +53,6 @@ export const BASELINE_BLOCKED_KEYWORDS: readonly string[] = [
   "سینما",
   "حوادث",
   "تصادف",
-  "تخصیص اعتبار",
-  "اعتبارات عمرانی",
-  "اعتبارات استانی",
-  "کالابرگ",
-  "اعتبار کالابرگ",
 ];
 
 /** Operator override replaces the built-in baseline, including an explicit empty list. */
@@ -58,7 +61,7 @@ export function baselineKeywords(filter: AiTopicFilterConfig | null | undefined)
 }
 
 /**
- * Normalizes text for Persian-friendly matching:
+ * Normalizes text for bilingual (English + Persian) matching:
  * - lowercases Latin text
  * - folds Arabic letter variants into Persian forms (ي→ی, ك→ک, ...)
  * - strips diacritics, tatweel and zero-width joiners (ZWNJ included, so
@@ -79,11 +82,31 @@ export function normalizeForMatch(value: string | null | undefined): string {
     .trim();
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Matches a normalized keyword against a normalized haystack.
+ * Short single-token ASCII keywords (<= 5 chars, e.g. "nfl", "imf", "fed",
+ * "ecb", "gdp", "ai") require non-alphanumeric boundaries so "nfl" never hits
+ * inside "inflation" and "fed" never hits inside "stuffed". Longer words,
+ * multi-word phrases, and Persian stems use substring matching.
+ */
+export function keywordMatchesHaystack(rawKeyword: string, haystack: string): boolean {
+  const keyword = normalizeForMatch(rawKeyword);
+  if (!keyword) return false;
+  if (/^[a-z0-9]{1,5}$/.test(keyword)) {
+    const pattern = new RegExp(`(?<![a-z0-9])${escapeRegex(keyword)}(?![a-z0-9])`);
+    return pattern.test(haystack);
+  }
+  return haystack.includes(keyword);
+}
+
 function topicMatches(topic: AiTopicRule, haystack: string): boolean {
   if (!topic.enabled) return false;
   for (const raw of topic.keywords) {
-    const keyword = normalizeForMatch(raw);
-    if (keyword && haystack.includes(keyword)) return true;
+    if (keywordMatchesHaystack(raw, haystack)) return true;
   }
   return false;
 }
@@ -137,7 +160,7 @@ export function evaluateTopicFilter(
 ): TopicFilterOutcome {
   const haystack = normalizeForMatch([article.title, article.description, article.content].filter(Boolean).join(" \u2000 "));
 
-  const baselineHits = baselineKeywords(filter).filter((keyword) => haystack.includes(normalizeForMatch(keyword)));
+  const baselineHits = baselineKeywords(filter).filter((keyword) => keywordMatchesHaystack(keyword, haystack));
   if (baselineHits.length > 0) {
     return { verdict: "skip", reason: "matched_blocked_keyword", matchedTopics: [], blockedKeywords: [...baselineHits] };
   }
@@ -153,7 +176,7 @@ export function evaluateTopicFilter(
     return { verdict: "pass", reason: "no_effective_topics", matchedTopics: [] };
   }
 
-  const blockedHits = blocked.filter((keyword) => haystack.includes(normalizeForMatch(keyword)));
+  const blockedHits = blocked.filter((keyword) => keywordMatchesHaystack(keyword, haystack));
   if (blockedHits.length > 0) {
     return { verdict: "skip", reason: "matched_blocked_keyword", matchedTopics: [], blockedKeywords: blockedHits };
   }
@@ -197,11 +220,30 @@ export function isTopicGateActive(filter: AiTopicFilterConfig | null | undefined
   return baselineKeywords(filter).length > 0 || isTopicFilterActive(filter);
 }
 
-/** Preset topic suggestions offered by the admin UI (labels + starter keywords). */
+/** Preset topic suggestions offered by the admin UI (bilingual English + Persian economic topics). */
 export const TOPIC_PRESETS: Array<{ label: string; keywords: string[] }> = [
-  { label: "بازار خودرو", keywords: ["خودرو", "خودروساز", "قیمت خودرو", "واردات خودرو", "بازار خودرو"] },
-  { label: "مسکن", keywords: ["مسکن", "ملک", "ساخت‌وساز", "قیمت مسکن", "رهن", "اجاره"] },
-  { label: "انرژی", keywords: ["انرژی", "نفت", "گاز", "برق", "بنزین", "پتروشیمی"] },
-  { label: "سیاست پولی", keywords: ["بانک مرکزی", "نرخ بهره", "نقدینگی", "تورم", "ارز", "دلار", "سیاست پولی"] },
-  { label: "تجارت خارجی", keywords: ["تجارت خارجی", "صادرات", "واردات", "گمرک", "ترجیحی", "توافق‌نامه تجاری"] },
+  {
+    label: "سیاست پولی و بانک‌های مرکزی",
+    keywords: ["monetary policy", "central bank", "federal reserve", "interest rate", "inflation", "ecb", "سیاست پولی"],
+  },
+  {
+    label: "اقتصاد کلان و رشد جهانی",
+    keywords: ["macroeconomics", "gdp", "economic growth", "recession", "fiscal policy", "sovereign debt", "اقتصاد کلان"],
+  },
+  {
+    label: "تجارت جهانی و ژئواکونومیک",
+    keywords: ["international trade", "tariff", "supply chain", "geoeconomics", "sanctions", "industrial policy", "تجارت جهانی"],
+  },
+  {
+    label: "بازارهای مالی و ثبات بانکی",
+    keywords: ["financial stability", "capital markets", "bond market", "yield curve", "liquidity", "banking crisis", "بازار مالی"],
+  },
+  {
+    label: "انرژی، کالاها و اقتصاد اقلیم",
+    keywords: ["energy transition", "oil market", "commodities", "opec", "carbon tax", "critical minerals", "بازار انرژی"],
+  },
+  {
+    label: "هوش مصنوعی، بهره‌وری و بازار کار",
+    keywords: ["labor market", "productivity", "artificial intelligence", "automation", "employment", "digital economy", "بهره‌وری"],
+  },
 ];

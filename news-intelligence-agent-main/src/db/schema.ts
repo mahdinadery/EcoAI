@@ -113,6 +113,7 @@ export const news = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
 
     // Latest AI analysis snapshot (Milestone 4) — nullable until analyzed.
+    translatedTitle: text("translated_title"),
     summary: text("summary"),
     category: text("category"),
     importanceScore: integer("importance_score"),
@@ -169,6 +170,7 @@ export const aiAnalyses = pgTable(
     model: text("model"),
     // "success" | "failed"
     status: text("status").notNull(),
+    translatedTitle: text("translated_title"),
     summary: text("summary"),
     category: text("category"),
     importance: integer("importance"),

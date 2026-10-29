@@ -8,8 +8,20 @@ export function BulletinConfigPanel({ value, onChange }: Props) {
   const update = (patch: Partial<BulletinSettings>) => onChange({ ...settings, ...patch });
   const preview = buildBulletinMessage({
     settings, generatedAt: new Date("2026-01-01T12:00:00Z"), timezone: "Asia/Tehran",
-    intro: "این یک مقدمهٔ نمونه برای پیش‌نمایش است؛ هیچ درخواست AI اجرا نشده است.",
-    items: Array.from({length: 5}, (_, i) => ({ id: String(i), title: `خبر نمونه ${i + 1}: تغییر مقررات اعتبارسنجی`, oneLiner: "خلاصهٔ کوتاه و نمونهٔ خبر.", whyItMatters: "این تغییر بر تصمیم اعطای اعتبار اثر دارد.", url: "https://example.com/sample", importanceScore: 80, hashtags: "#اعتبارسنجی #بازار_سهام", publishedAt: null, entityTags: ["بانک نمونه"], corroborated: true })),
+    intro: "این یک مقدمهٔ نمونه برای پیش‌نمایش بولتن تحلیلی اقتصادی است؛ هیچ درخواست AI اجرا نشده است.",
+    items: Array.from({length: 5}, (_, i) => ({
+      id: String(i),
+      title: `Why Global Neutral Interest Rates Remain Elevated (${i + 1})`,
+      translatedTitle: `چرا نرخ بهرهٔ خنثی در اقتصاد جهانی بالا مانده است (${i + 1})`,
+      oneLiner: "خلاصهٔ تحلیلی نمونه از استدلال اقتصادی و پیامدهای سیاست پولی و مالی.",
+      whyItMatters: "افزایش نرخ بهرهٔ خنثی هزینهٔ تأمین مالی دولت‌ها و شرکت‌ها را در میان‌مدت تغییر می‌دهد.",
+      url: "https://example.com/sample",
+      importanceScore: 85,
+      hashtags: "#اقتصاد_کلان #سیاست_پولی",
+      publishedAt: null,
+      entityTags: ["صندوق بین‌المللی پول", "فدرال رزرو"],
+      corroborated: true,
+    })),
   });
   return <section className="rounded-2xl border border-line bg-surface p-5 space-y-3" dir="rtl">
     <div className="flex justify-between"><h2 className="font-bold">پیکربندی بولتن</h2><button type="button" className="text-xs text-muted" onClick={() => onChange({...DEFAULT_BULLETIN_SETTINGS})}>بازنشانی پیش‌فرض</button></div>

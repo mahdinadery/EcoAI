@@ -66,7 +66,11 @@ export async function POST(request: Request) {
     }
 
     const intro = await synthesizeBulletinBrief(
-      items.map((item) => ({ title: item.title, oneLiner: item.summary, whyItMatters: item.whyItMatters })),
+      items.map((item) => ({
+        title: item.translatedTitle?.trim() ? `${item.translatedTitle} (${item.title})` : item.title,
+        oneLiner: item.summary,
+        whyItMatters: item.whyItMatters,
+      })),
       { model: aiConfig.model, enabled: bulletin.aiIntro, introPrompt: bulletin.introPrompt, maxTokens: bulletin.introMaxTokens },
     );
 
@@ -76,9 +80,10 @@ export async function POST(request: Request) {
       items: items.map((item) => ({
         id: item.id,
         title: item.title,
+        translatedTitle: item.translatedTitle,
         oneLiner: item.summary,
         whyItMatters: item.whyItMatters,
-      hashtags: item.hashtags,
+        hashtags: item.hashtags,
         url: item.url,
         importanceScore: item.importanceScore,
         publishedAt: item.publishedAt,

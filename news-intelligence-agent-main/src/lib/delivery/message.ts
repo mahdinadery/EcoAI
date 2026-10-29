@@ -1,26 +1,31 @@
 import type { NewsRow } from "@/db/schema";
 
 /**
- * Renders the admin-facing Persian message shared by every provider.
+ * Renders the Persian/bilingual message shared by every delivery provider.
  *
  * Both Local and Bale receive EXACTLY this text, so Local stays a faithful
- * rehearsal of a real Bale delivery. Internal AI fields (novelty, relevance and
- * the reasoning) are intentionally excluded — they remain visible in the
- * Dashboard only.
+ * rehearsal of a real Bale delivery. When an article carries an AI-translated
+ * Persian headline (`translatedTitle`), the message renders a clean bilingual
+ * header (Persian title on top + original English title below for terminology
+ * precision). Single-language articles without `translatedTitle` render once.
+ *
+ * Kept free of runtime relative imports because this module is imported
+ * directly by Node's native test runner (`node --test`).
  */
 
-const MAX_SUMMARY_LENGTH = 600;
+const MAX_SUMMARY_LENGTH = 1200;
 
 /**
  * Markdown hyperlink helpers (Bale renders `parse_mode: "Markdown"`). The
- * title is the hyperlink to the ORIGINAL source URL — no short links. Kept
- * local because this module is imported by the node test runner and cannot
- * pull runtime relative imports (bulletin.ts duplicates the same 8 lines).
+ * footer label is the hyperlink to the ORIGINAL source URL — no short links.
  */
 export function escapeMd(text: string): string {
-  return text.split(/(#[\p{L}\p{N}_\\\u200c]+)/gu).map((part, index) =>
-    index % 2 ? part.replace(/\\_/g, "_").replace(/\\/g, "") : part.replace(/([\\_*\[\]`])/g, "\\$1")
-  ).join("");
+  return text
+    .split(/(#[\p{L}\p{N}_\\\u200c]+)/gu)
+    .map((part, index) =>
+      index % 2 ? part.replace(/\\_/g, "_").replace(/\\/g, "") : part.replace(/([\\_*\[\]`])/g, "\\$1"),
+    )
+    .join("");
 }
 
 export function mdLink(text: string, url: string): string {
@@ -30,9 +35,7 @@ export function mdLink(text: string, url: string): string {
 
 /**
  * Display-layer noise filter for rows analyzed before the prompt fix (the
- * legacy prompt produced «برای مخاطب هدف اهمیت مشخصی ندارد» as filler). The
- * full rule set lives in src/lib/ai/why-guard.ts; this module cannot import
- * it without breaking the node test runner (extensionless relative import).
+ * legacy prompt produced «برای مخاطب هدف اهمیت مشخصی ندارد» as filler).
  */
 const WHY_NOISE =
   /اهمیت مشخصی ندارد|اهمیت (خاص|چندان)ی ندارد|مهم نیست|بدون (اهمیت|ربط)|^[-—–]\s*$|^ندارد\s*[.،]?$/;
@@ -72,6 +75,26 @@ function compact(value: string | null | undefined, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
 }
 
+/**
+ * Renders a bilingual header (Persian translated title + original English
+ * title) when `translatedTitle` is present and distinct from `title`. Falls
+ * back to the single plain `title` when `translatedTitle` is absent/identical.
+ */
+export function formatBilingualTitle(
+  originalTitle: string | null | undefined,
+  translatedTitle?: string | null,
+  limit = 300,
+): string {
+  const origClean = (originalTitle ?? "").replace(/\s+/g, " ").trim();
+  const transClean = (translatedTitle ?? "").replace(/\s+/g, " ").trim();
+
+  if (transClean && origClean && transClean.toLowerCase() !== origClean.toLowerCase()) {
+    return `🇮🇷 ${escapeMd(compact(transClean, limit))}\n🌐 ${escapeMd(compact(origClean, limit))}`;
+  }
+
+  return escapeMd(compact(transClean || origClean, limit));
+}
+
 function formatImportance(score: number | null): string {
   if (score === null || Number.isNaN(score)) return "ثبت نشده";
   const clamped = Math.max(0, Math.min(100, Math.round(score)));
@@ -86,13 +109,17 @@ function formatImportance(score: number | null): string {
 export type MessageExtras = {
   /** Every source carrying this event (multi-source confirmation) — with links. */
   corroborationItems?: Array<{ source: string; url: string }>;
-  /** Persian entity names (banks/companies/institutions) from the AI output. */
+  /** Persian entity names (institutions/banks/countries) from the AI output. */
   entityTags?: string[];
   /** Titles of previously delivered related stories (follow-ups). */
   relatedTitles?: string[];
 };
 
-export function buildNewsMessage(article: NewsRow, extras: MessageExtras = {}): string {
+export function buildNewsMessage(
+  article: Pick<NewsRow, "title" | "summary" | "category" | "importanceScore" | "url"> &
+    Partial<Pick<NewsRow, "translatedTitle" | "whyItMatters" | "entityTags" | "source" | "hashtags">>,
+  extras: MessageExtras = {},
+): string {
   const why = usefulWhy(article.whyItMatters);
   const entities = (extras.entityTags ?? article.entityTags ?? []).slice(0, 6).join("، ");
   const related = (extras.relatedTitles ?? []).slice(0, 2);
@@ -116,13 +143,13 @@ export function buildNewsMessage(article: NewsRow, extras: MessageExtras = {}): 
   return [
     "📰 عنوان خبر",
     "",
-    escapeMd(compact(article.title, 300)),
+    formatBilingualTitle(article.title, article.translatedTitle, 300),
     "",
     "خلاصه:",
     escapeMd(compact(article.summary, MAX_SUMMARY_LENGTH)),
-    ...(why ? ["", "چرا مهم است:", escapeMd(compact(why, 300))] : []),
+    ...(why ? ["", "چرا مهم است:", escapeMd(compact(why, 280))] : []),
     ...(entities ? ["", "نهادها:", escapeMd(entities)] : []),
-    ...related.flatMap((title) => ["", "مرتبط با:", escapeMd(compact(title, 140))]),
+    ...related.flatMap((title) => ["", "مرتبط با:", escapeMd(compact(title, 160))]),
     "",
     "دسته:",
     escapeMd(compact(article.category, 60)),

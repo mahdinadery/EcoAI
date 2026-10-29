@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { StatusBadge } from "@/components/status-badge";
-import { CREDIT_RATING_PACK } from "@/lib/news/news-packs";
+import { ENGLISH_ECONOMICS_PACK } from "@/lib/news/news-packs";
 import { SchemaRepairCard } from "./schema-repair-card";
 
 type Health = "healthy" | "warning" | "failed" | "paused";
@@ -116,17 +116,18 @@ const HEALTH_TONE: Record<Health, "success" | "warning" | "danger" | "muted"> = 
 };
 
 /**
- * Curated Persian feeds for the credit-rating / finance domain (Phase 3
- * deliverable: «چند منبع»). One click fills the add-source form; the operator
- * can edit before saving. URLs are the outlets' public RSS endpoints.
+ * Curated English analytical economic & research RSS feeds. One click fills
+ * the add-source form; the operator can test and edit before saving.
  */
 const PRESET_SOURCES: Array<{ name: string; url: string; category: string; note: string }> = [
-  { name: "خبرگزاری جمهوری اسلامی (ایرنا)", url: "https://www.irna.ir/rss", category: "خبرگزاری", note: "رسمی‌ترین خبرگزاری دولتی — سیاست‌ها و مقررات" },
-  { name: "خبرگزاری دانشجویان ایران (ایسنا)", url: "https://www.isna.ir/rss", category: "خبرگزاری", note: "پوشش گستردهٔ اقتصادی و بانکی" },
-  { name: "خبرگزاری مهر", url: "https://www.mehrnews.com/rss", category: "خبرگزاری", note: "اقتصاد، بازار پول و سرمایه" },
-  { name: "روزنامهٔ دنیای اقتصاد", url: "https://donya-e-eqtesad.com/feeds", category: "اقتصادی", note: "تخصصی‌ترین رسانهٔ اقتصادی — بهترین منبع اعتبارسنجی" },
-  { name: "خبرآنلاین", url: "https://www.khabaronline.ir/rss", category: "عمومی", note: "اقتصاد و بازارهای مالی" },
-  { name: "سنا (خبرگزاری بازار سرمایه)", url: "https://www.sena.ir/rss", category: "بورس", note: "بورس، ناشران و ابزارهای مالی — قبل از ذخیره تست کنید" },
+  { name: "Project Syndicate — Economics", url: "https://www.project-syndicate.org/rss/section/economics", category: "مقالات تحلیلی اقتصاد", note: "یادداشت‌های اقتصاددانان برجسته و برندگان نوبل اقتصاد" },
+  { name: "VoxEU / CEPR", url: "https://cepr.org/rss/voxeu", category: "پژوهش اقتصادی", note: "مقالات تحلیلی مبتنی بر پژوهش‌های روز اقتصاددانان" },
+  { name: "IMF Blog — صندوق بین‌المللی پول", url: "https://www.imf.org/en/Blogs/rss", category: "نهادهای بین‌المللی", note: "تحلیل‌های اقتصاد کلان جهانی و ثبات مالی" },
+  { name: "Brookings — Economy", url: "https://www.brookings.edu/topic/economy/feed/", category: "اندیشکده اقتصادی", note: "مقالات سیاست پولی، مالی و اقتصاد جهانی" },
+  { name: "Peterson Institute (PIIE)", url: "https://www.piie.com/rss.xml", category: "تجارت و اقتصاد بین‌الملل", note: "تجارت جهانی، تعرفه‌ها، ارز و ژئواکونومیک" },
+  { name: "The Economist — Finance & Economics", url: "https://www.economist.com/finance-and-economics/rss.xml", category: "تحلیل مالی و اقتصادی", note: "گزارش‌ها و تحلیل‌های مالی و اقتصادی اکونومیست" },
+  { name: "Federal Reserve — FEDS Notes", url: "https://www.federalreserve.gov/feeds/feds_notes.xml", category: "بانک مرکزی و سیاست پولی", note: "یادداشت‌های پژوهشی اقتصاددانان فدرال رزرو" },
+  { name: "World Bank Blogs — بانک جهانی", url: "https://blogs.worldbank.org/en/rss.xml", category: "اقتصاد توسعه", note: "پژوهش‌های اقتصاد توسعه و بازارهای نوظهور" },
 ];
 
 const emptyForm = (): FormState => ({
@@ -408,7 +409,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({
-          packId: CREDIT_RATING_PACK.id,
+          packId: ENGLISH_ECONOMICS_PACK.id,
           applyTopics: packTopics,
           applySources: packSources,
           applyAudienceNote: packAudience,
@@ -493,15 +494,15 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
       <section className="rounded-2xl border border-ok-line bg-ok-soft/40 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold text-ink">بسته خبری اعتبارسنجی (اخبار داخلی)</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">{CREDIT_RATING_PACK.description}</p>
+            <h2 className="text-base font-bold text-ink">{ENGLISH_ECONOMICS_PACK.title}</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">{ENGLISH_ECONOMICS_PACK.description}</p>
           </div>
           <div className="flex shrink-0 gap-2 text-xs">
             <span className="rounded-full bg-surface px-3 py-1 font-semibold text-ok-ink">
-              {CREDIT_RATING_PACK.topics.length} موضوع
+              {ENGLISH_ECONOMICS_PACK.topics.length} موضوع
             </span>
             <span className="rounded-full bg-surface px-3 py-1 font-semibold text-ok-ink">
-              {CREDIT_RATING_PACK.sources.length} منبع
+              {ENGLISH_ECONOMICS_PACK.sources.length} منبع انگلیسی
             </span>
           </div>
         </div>
@@ -514,7 +515,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackTopics(event.target.checked)}
               type="checkbox"
             />
-            افزودن موضوعات و فعال‌سازی فیلتر تمرکز
+            افزودن موضوعات اقتصادی انگلیسی و فعال‌سازی فیلتر تمرکز
           </label>
           <label className="inline-flex cursor-pointer items-center gap-2">
             <input
@@ -523,7 +524,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackSources(event.target.checked)}
               type="checkbox"
             />
-            افزودن منابع خبری داخلی (هر منبع قبل از ثبت تست می‌شود)
+            افزودن فیدهای مقالات اقتصادی انگلیسی (هر منبع قبل از ثبت تست می‌شود)
           </label>
           <label className="inline-flex cursor-pointer items-center gap-2">
             <input
@@ -532,7 +533,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackAudience(event.target.checked)}
               type="checkbox"
             />
-            افزودن زمینه «شرکت اعتبارسنجی» به پرامپت تحلیل
+            افزودن زمینه «مقالات تحلیلی اقتصادی و ترجمه فارسی» به پرامپت
           </label>
         </div>
 
@@ -543,7 +544,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
             onClick={handleApplyPack}
             type="button"
           >
-            {packBusy ? "در حال اعمال و تست منابع…" : "اعمال بسته اعتبارسنجی"}
+            {packBusy ? "در حال اعمال و تست منابع…" : "اعمال بسته مقالات اقتصادی انگلیسی"}
           </button>
           <span className="text-[11px] text-ok-ink/70">
             موضوعات روی نسخه فعال پیکربندی AI اعمال می‌شوند (نسخه قبلی در تاریخچه می‌ماند).
@@ -707,7 +708,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
 
       {!form ? (
         <section className="rounded-2xl border border-ok-line bg-ok-soft/40 p-4">
-          <h2 className="text-sm font-bold text-ink">منابع پیشنهادی حوزهٔ اعتبارسنجی و اقتصاد</h2>
+          <h2 className="text-sm font-bold text-ink">منابع پیشنهادی مقالات و تحلیل‌های اقتصادی انگلیسی</h2>
           <p className="mt-1 text-xs leading-5 text-muted">
             یک منبع را انتخاب کنید تا فرم افزودن با مشخصات آن پر شود؛ قبل از ذخیره حتماً «تست اتصال» را بزنید.
           </p>

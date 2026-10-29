@@ -1,11 +1,11 @@
 /**
- * AI Configuration Center — prompt construction (Milestone 5).
+ * AI Configuration Center — prompt construction (Milestone 5+).
  *
  * Single reusable place where a stored/draft configuration is turned into the
  * text actually sent to the AI provider:
  *
- *   System Prompt + Enabled Analysis Features + Decision Rules + Output Schema
- *   + Article Content
+ *   System Prompt + Audience Focus + Enabled Analysis Features + Decision Rules
+ *   + Topic Focus + Output Contract + English Article Content
  *
  * Both the production analysis pipeline (src/lib/news/analyze.ts) and the admin
  * "Test Configuration" panel call this same function, so there is exactly one
@@ -23,20 +23,19 @@ import type {
  * Who this product is for, and therefore what "relevant" means when the model
  * scores `relevance`. Used whenever the operator left `audienceFocus` empty.
  *
- * Deliberately self-contained in this module (see the note below) — the admin
- * console imports this constant for its placeholder text.
+ * Deliberately self-contained in this module (no runtime imports) — the admin
+ * console and the Node test runner import this constant directly.
  */
 export const DEFAULT_AUDIENCE_FOCUS =
-  "مخاطب هدف این سامانه یک شرکت اعتبارسنجی است. «مرتبط بودن» فقط یعنی ارتباط مستقیم و روشن خبر با یکی از این حوزه‌ها: " +
-  "اعتبارسنجی و رتبه‌بندی اعتباری، ریسک اعتباری و نکول، سلامت مالی و اعتباری بانک‌ها و شرکت‌ها، بازار بدهی و تأمین مالی، " +
-  "و مقررات ناظر بر اعتبار و رتبه‌بندی در ایران.";
+  "مخاطب هدف این سامانه اقتصاددانان، پژوهشگران اقتصادی، سیاست‌گذاران و تحلیلگران بازارهای مالی فارسی‌زبان هستند که مقالات عمیق، یادداشت‌های تحلیلی و گزارش‌های اقتصادی انگلیسی‌زبان را دنبال می‌کنند. " +
+  "«مرتبط بودن» یعنی ارتباط مستقیم و تحلیلی مطلب با یکی از این حوزه‌ها: اقتصاد کلان و رشد اقتصادی، سیاست پولی و بانک‌های مرکزی، سیاست مالی و بدهی عمومی، تجارت بین‌الملل و ژئواکونومیک، بازارهای مالی و ثبات بانکی، اقتصاد انرژی و کالاهای اساسی، اقتصاد توسعه، یا اقتصاد فناوری و بازار کار.";
 
 /** Hard relevance rules appended to every prompt after the audience focus. */
 const AUDIENCE_RELEVANCE_RULES = [
   "قوانین قطعی امتیاز مرتبط بودن (relevance):",
-  "- «مرتبط بودن» فقط ارتباط واقعی خبر با مخاطب و حوزه‌های بالا است؛ «مهم بودن» یا «اقتصادی بودن» خبر به‌تنهایی مرتبط بودن نیست.",
-  "- تفکیک مفهومی واژهٔ «اعتبار»: هرگز «تخصیص اعتبار» از طرف دولت یا بودجه (مانند تخصیص اعتبار کالابرگ و یارانه، تخصیص اعتبار ساخت جاده و پل، پروژه‌های عمرانی، اعتبارات استانی و بودجهٔ دستگاه‌های اجرایی) را با «اعتبارسنجی و رتبه‌بندی اعتباری» معادل نگیر؛ واژهٔ «اعتبار» در این خبرها به معنی بودجه و ردیف مالی دولت است نه ارزیابی توان بازپرداخت یا رتبهٔ اعتباری، و این اخبار باید relevance زیر ۲۰ و shouldSend=false بگیرند.",
-  "- هر خبری که پیوند روشنی با این حوزه‌ها ندارد (پروژه‌های شهری و عمرانی، مالیات‌ها و عوارض عمومی، قیمت و تورم روزمره، ورزش، سرگرمی، حوادث، و اخبار عمومی بین‌المللی بدون پیوند با اعتبارسنجی ایران) باید relevance زیر ۳۰ و shouldSend=false بگیرد، حتی اگر importance بالای ۸۰ باشد.",
+  "- «مرتبط بودن» فقط ارتباط واقعی و تحلیلی مطلب با مخاطب و حوزه‌های اقتصادی بالا است؛ صرفاً «مهم بودن» یک رویداد عمومی یا سیاسی بدون تحلیل اقتصادی، مرتبط بودن محسوب نمی‌شود.",
+  "- مقالات تحلیلی، یادداشت‌های اقتصاددانان و پژوهش‌های نهادهای معتبر اقتصادی بین‌المللی (مانند IMF، بانک جهانی، فدرال رزرو، بانک مرکزی اروپا، VoxEU/CEPR، Project Syndicate، Brookings، PIIE، Bruegel و The Economist) در اولویت بالا هستند و در صورت داشتن استدلال اقتصادی روشن امتیاز مرتبط بودن بالا (۷۰ تا ۱۰۰) می‌گیرند.",
+  "- هر مطلبی که پیوند روشنی با این حوزه‌های اقتصادی ندارد (ورزش، سرگرمی، سلبریتی‌ها، حوادث، سبک زندگی، تبلیغات تجاری یا هیاهوی زرد بدون محتوای اقتصادی) باید relevance زیر ۳۰ و shouldSend=false بگیرد، حتی اگر importance بالای ۸۰ باشد.",
 ];
 
 /**
@@ -75,7 +74,7 @@ export function describeTopicFocus(
     lines.push(
       filter?.mode === "exclude"
         ? "موضوعاتی که باید نامرتبط تلقی شوند و امتیاز مرتبط بودن پایین بگیرند:"
-        : "تمرکز موضوعی فعلی سامانه (فقط اخبار مرتبط با این موضوعات):",
+        : "تمرکز موضوعی فعلی سامانه (فقط مقالات و اخبار مرتبط با این موضوعات):",
     );
     for (const topic of topics) {
       const keywords = topic.keywords.map((keyword) => keyword.trim()).filter(Boolean).join("، ");
@@ -107,6 +106,8 @@ export type PromptableConfig = {
 export type ArticleInput = {
   title: string;
   description: string | null;
+  /** Optional full/extracted article body (when RSS `<content:encoded>` or HTML extraction succeeded). */
+  content?: string | null;
   source: string;
   publishedAt: string | null;
 };
@@ -126,16 +127,16 @@ function buildOutputContract(config: PromptableConfig): { template: string; enab
   const lines: string[] = [];
   const enabledFields: string[] = [];
 
-  // Iterating the schema (instead of a hard-coded key order) keeps the contract
-  // in the order the administrator sees and avoids a runtime import here.
   for (const schemaField of config.outputSchema) {
     const feature = config.features[schemaField.name];
     if (!feature?.enabled || !schemaField.enabled) continue;
 
     enabledFields.push(schemaField.name);
-    const typeHint = describeType(schemaField.type,
+    const typeHint = describeType(
+      schemaField.type,
       Math.max(schemaField.min ?? 0, feature.scaleMin ?? 0),
-      Math.min(schemaField.max ?? 100, feature.scaleMax ?? 100));
+      Math.min(schemaField.max ?? 100, feature.scaleMax ?? 100),
+    );
     const requiredHint = schemaField.required ? "الزامی" : "اختیاری";
     lines.push(`  "${schemaField.name}": ${typeHint} — ${requiredHint} — ${schemaField.description} — ${feature.instruction}`);
   }
@@ -157,9 +158,6 @@ function buildDecisionRulesSection(config: PromptableConfig): string {
     rules.minNoveltyToSend > 0 ? `- امتیاز تازگی (novelty) >= ${rules.minNoveltyToSend}` : null,
   ].filter(Boolean) as string[];
 
-  // "any" is the legacy OR behaviour (kept only for old saved configurations).
-  // The default is "all": every threshold must pass, so a high importance score
-  // can never make an off-topic article recommendable.
   if (rules.combine === "any") {
     return [
       "«shouldSend» را true قرار بده تنها اگر حداقل یکی از این شرایط برقرار باشد (منطق OR — سازگاری با تنظیمات قدیمی):",
@@ -199,7 +197,7 @@ export function buildAIAnalysisPrompt(
     "",
     audienceSection,
     "",
-    "دستورالعمل‌های تحلیل (فقط فیلدهای زیر را در خروجی بگنجان):",
+    "دستورالعمل‌های تحلیل و ترجمه (فقط فیلدهای زیر را به زبان فارسی در خروجی JSON بگنجان):",
     template,
     "",
     "قوانین راهنما برای تصمیم ارسال:",
@@ -212,12 +210,25 @@ export function buildAIAnalysisPrompt(
     .filter((line) => line !== null)
     .join("\n");
 
+  const trimmedDescription = article.description?.trim() || null;
+  const trimmedContent = article.content?.trim() || null;
+
+  const contentLines: string[] = [];
+  if (trimmedContent) {
+    if (trimmedDescription && !trimmedContent.toLowerCase().includes(trimmedDescription.slice(0, 120).toLowerCase())) {
+      contentLines.push(`چکیده فید: ${trimmedDescription}`);
+    }
+    contentLines.push(`متن مقاله:\n${trimmedContent}`);
+  } else {
+    contentLines.push(`توضیحات/محتوا: ${trimmedDescription ?? "نامشخص"}`);
+  }
+
   const userPrompt = [
-    "لطفاً این مقاله را تحلیل کن:",
-    `عنوان: ${article.title}`,
+    "لطفاً این مقاله اقتصادی را تحلیل، خلاصه و به فارسی ترجمه کن:",
+    `عنوان اصلی: ${article.title}`,
     `منبع: ${article.source}`,
     `تاریخ انتشار: ${article.publishedAt ?? "نامشخص"}`,
-    `توضیحات/محتوا: ${article.description ?? "نامشخص"}`,
+    ...contentLines,
   ].join("\n");
 
   return { systemPrompt, userPrompt, enabledFields };

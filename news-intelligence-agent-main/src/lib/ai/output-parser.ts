@@ -12,6 +12,7 @@ import type { AiOutputSchema } from "./config-types";
 import { sanitizeWhyItMatters } from "./why-guard";
 
 export type ParsedAiOutput = {
+  translatedTitle: string | null;
   hashtags: string | null;
   summary: string;
   category: string;
@@ -21,11 +22,21 @@ export type ParsedAiOutput = {
   mainEvent: string | null;
   /** One-line "why it matters for the audience" — null when the model omitted it. */
   whyItMatters: string | null;
-  /** Persian names of banks/companies/institutions mentioned — null when omitted. */
+  /** Persian names of institutions/banks/countries mentioned — null when omitted. */
   entities: string[] | null;
   shouldSend: boolean;
   reason: string;
 };
+
+/** Cleans an AI-translated Persian headline (strips wrapping quotes and linebreaks). */
+export function normalizeTranslatedTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/\s+/g, " ")
+    .replace(/^["'«»\s]+|["'«»\s]+$/g, "")
+    .trim();
+  return cleaned.length >= 3 ? cleaned.slice(0, 350) : null;
+}
 
 /** Canonical, bounded hashtags; remove legacy Markdown escaping and discard prose. */
 export function normalizeHashtags(value: unknown): string | null {
@@ -165,6 +176,7 @@ export function validateAiOutputAgainstSchema(
     ok: true,
     issues,
     value: {
+      translatedTitle: normalizeTranslatedTitle(parsed.translatedTitle),
       hashtags: normalizeHashtags(parsed.hashtags),
       summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
       category: typeof parsed.category === "string" && parsed.category.trim() ? parsed.category.trim() : "سایر",

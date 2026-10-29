@@ -839,7 +839,7 @@ export function ScheduleCard({
                       .filter(Boolean),
                   })
                 }
-                placeholder={"رتبه‌بندی اعتباری / اعتبارسنجی"}
+                placeholder={"monetary policy / global inflation / fiscal sustainability"}
                 value={config.gapSearchQueries.join("\n")}
               />
             </label>

@@ -118,8 +118,8 @@ export function Sidebar() {
             </svg>
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">دستیار هوشمند اخبار</p>
-            <p className="mt-0.5 text-xs text-faint">مرکز مدیریت، تحلیل و انتشار</p>
+            <p className="text-sm font-bold text-ink">EcoAI — دستیار اقتصاد</p>
+            <p className="mt-0.5 text-xs text-faint">دریافت، ترجمه و ارسال به بله</p>
           </div>
         </div>
 

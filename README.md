@@ -4,7 +4,7 @@
 
 ---
 
-## استقرار رایگان در ۳ گام (Neon + Render Blueprint + GitHub Actions)
+## استقرار رایگان در ۳ گام (Neon + Render + GitHub Actions)
 
 ### ۱) دیتابیس رایگان در Neon
 1. در سایت [neon.tech](https://neon.tech) با حساب GitHub وارد شوید و یک پروژهٔ رایگان بسازید.
@@ -13,12 +13,16 @@
    postgresql://neondb_owner:PASSWORD@ep-xxxx-pooler.eu-central-1.aws.neon.tech/neondb?sslmode=require
    ```
 
-### ۲) استقرار تک‌کلیکی روی Render (از طریق Blueprint)
-فایل [`render.yaml`](./render.yaml) در ریشهٔ مخزن تنظیم شده و مسیر `rootDir: news-intelligence-agent-main` را به‌صورت خودکار به Render معرفی می‌کند:
+### ۲) استقرار روی Render (هر دو روش Web Service و Blueprint پشتیبانی می‌شود)
+تمام فایل‌های پروژه (`package.json`، `.node-version` و `src/`) مستقیماً در **ریشهٔ مخزن** قرار دارند و نیازی به تغییر `Root Directory` نیست:
 
 1. در سایت [render.com](https://render.com) با GitHub وارد شوید.
-2. از بالا روی **New + → Blueprint** بزنید و مخزن **`mahdinadery/EcoAI`** را انتخاب کنید.
-3. در فرم متغیرها (یا تب **Environment** سرویس `ecoai`) مقادیر زیر را وارد کنید:
+2. روی **New + → Web Service** (یا **New + → Blueprint**) بزنید و مخزن **`mahdinadery/EcoAI`** را انتخاب کنید:
+   - **Branch**: `main`
+   - **Root Directory**: *(خالی بگذارید)*
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+3. در تب **Environment** متغیرهای زیر را وارد کنید:
    - `DATABASE_URL`: رشتهٔ Pooled کپی‌شده از Neon
    - `ADMIN_ACCESS_KEY`: یک کلید رمز قوی دلخواه برای ورود به پنل `/admin`
    - `AI_API_KEY`: کلید API هوش مصنوعی (OpenAI / Groq / OpenRouter)
@@ -28,10 +32,10 @@
    - `BALE_CHAT_ID`: شناسهٔ عددی یا `@username` کانال بله (بازو باید ادمین کانال باشد)
    - `BALE_DELIVERY_MODE`: `live`
    - `AUTO_SEND_DESTINATION`: `bale`
-4. روی **Apply / Deploy** بزنید. جدول‌ها و ستون‌های دیتابیس هنگام بالا آمدن سرور به‌صورت خودکار و ایمن (`db:ensure`) ساخته می‌شوند.
+4. روی **Deploy** بزنید. جدول‌ها و ستون‌های دیتابیس هنگام بالا آمدن سرور به‌صورت خودکار و ایمن (`db:ensure`) ساخته می‌شوند.
 
 ### ۳) فعال‌سازی زمان‌بندی خودکار در GitHub Actions (بیدار نگه داشتن Render)
-فایل‌های کرون در [`.github/workflows/`](./.github/workflows) در ریشهٔ مخزن قرار دارند و هر ۵ دقیقه نوبت‌های ارسال را بررسی می‌کنند. برای فعال‌سازی آن‌ها:
+فایل‌های کرون در [`.github/workflows/`](./.github/workflows) قرار دارند و هر ۵ دقیقه نوبت‌های ارسال را بررسی می‌کنند. برای فعال‌سازی آن‌ها:
 
 1. در مخزن GitHub به مسیر **Settings → Secrets and variables → Actions → New repository secret** بروید.
 2. این دو Secret را اضافه کنید:
@@ -45,4 +49,4 @@
 2. روی دکمهٔ **«اعمال بسته مقالات اقتصادی انگلیسی»** کلیک کنید تا ۱۰ فید تحلیلی اقتصاد جهانی و موضوعات مرتبط به‌صورت خودکار تست و ثبت شوند.
 3. در صفحهٔ `/dashboard` از کارت **«اتصال به بله»** اتصال کانال را تست کنید و در کارت **«ارسال خودکار زمان‌بندی‌شده»** ساعت‌های انتشار را فعال نمایید.
 
-برای جزئیات بیشتر به [`news-intelligence-agent-main/DEPLOYMENT.md`](./news-intelligence-agent-main/DEPLOYMENT.md) مراجعه کنید.
+برای جزئیات بیشتر به [`DEPLOYMENT.md`](./DEPLOYMENT.md) مراجعه کنید.

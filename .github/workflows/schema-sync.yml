@@ -12,9 +12,6 @@ jobs:
   ensure:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: news-intelligence-agent-main
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
@@ -34,7 +31,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: news-intelligence-agent-main/package-lock.json
       - run: npm ci --ignore-scripts
         if: steps.cfg.outputs.run == 'true'
       - name: Run additive schema sync

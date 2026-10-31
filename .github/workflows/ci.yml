@@ -7,9 +7,6 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: news-intelligence-agent-main
     env:
       # Dummy connection string so module-level DB imports succeed during CI
       # without touching a live database (`postinstall` db-ensure soft-fails).
@@ -20,7 +17,6 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: news-intelligence-agent-main/package-lock.json
       - run: npm ci
       - run: npm test
       - run: npm run typecheck

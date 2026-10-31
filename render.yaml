@@ -3,11 +3,10 @@
 # How to use:
 #   1. Create a free PostgreSQL database on Neon (https://neon.tech) and copy
 #      the *Pooled* connection string (?sslmode=require is already included).
-#   2. In Render: New + -> Blueprint -> connect `mahdinadery/EcoAI`. Render
-#      reads this root `render.yaml` and configures `rootDir: news-intelligence-agent-main`
-#      automatically, redeploying on every push to `main`.
-#   3. Fill in the `sync: false` secrets once in the Render Blueprint prompt
-#      (or later in the service's Environment tab). NEVER commit real secrets.
+#   2. In Render: either use New + -> Blueprint OR New + -> Web Service and
+#      connect `mahdinadery/EcoAI` (no Root Directory override needed).
+#   3. Fill in the `sync: false` secrets once in Render's Environment tab.
+#      NEVER commit real secrets in this file.
 #
 # Schema sync is automatic on deploy: `npm start` runs the `prestart` hook
 # (`scripts/db-ensure.mjs` — additive-only, idempotent).
@@ -17,7 +16,6 @@ services:
     runtime: node
     plan: free
     branch: main
-    rootDir: news-intelligence-agent-main
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health

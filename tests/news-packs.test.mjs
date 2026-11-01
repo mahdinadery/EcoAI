@@ -254,6 +254,11 @@ test("ai-economics pack topic gate rejects off-topic NBER general economics pape
       description: "An empirical analysis of data center investment and unit economics in foundation models.",
       content: null,
     },
+    {
+      title: "How AI Is Reshaping Corporate Productivity and Firm-Level Margins",
+      description: "Evidence from Fortune 500 deployments across services and manufacturing.",
+      content: null,
+    },
   ];
 
   for (const paper of onTopicPapers) {

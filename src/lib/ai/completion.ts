@@ -11,6 +11,8 @@ import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+const VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google/models";
+const VERTEX_EXPRESS_V1_BASE_URL = "https://aiplatform.googleapis.com/v1/publishers/google/models";
 const GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const AVALAI_BASE_URL = "https://api.avalai.ir/v1";
@@ -23,12 +25,25 @@ const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_XAI_MODEL = "grok-3-mini";
 
+const GEMINI_FALLBACK_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-3-flash-preview",
+] as const;
+
+const GROQ_FALLBACK_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+] as const;
+
 const CONNECT_TIMEOUT_MS = 12_000;
 const REQUEST_TIMEOUT_MS = 45_000;
 const FAST_FALLBACK_TIMEOUT_MS = 25_000;
 const FALLBACK_COMPACT_MAX_TOKENS = 1_200;
 
 const MAX_RETRIES = 2;
+const MAX_MODEL_FALLBACK_HOPS = 4;
 const RATE_LIMIT_BUFFER_MS = 1_000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504, 522, 524, 529]);
 
@@ -63,6 +78,7 @@ export function resolveAiApiKey(env: NodeJS.ProcessEnv = process.env): string {
     env.AI_API_KEY?.trim() ||
     env.OPENAI_API_KEY?.trim() ||
     env.GEMINI_API_KEY?.trim() ||
+    env.VERTEX_API_KEY?.trim() ||
     env.GROQ_API_KEY?.trim() ||
     env.OPENROUTER_API_KEY?.trim() ||
     ""
@@ -70,13 +86,14 @@ export function resolveAiApiKey(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Infers the OpenAI-compatible base URL from well-known API key prefixes when
+ * Infers the provider base URL from well-known API key prefixes when
  * `AI_API_BASE_URL` / `AI_BASE_URL` was left blank in the host environment.
  */
 export function inferBaseUrlFromApiKey(apiKey?: string | null): string | null {
   const key = apiKey?.trim() ?? "";
   if (!key) return null;
   if (key.startsWith("AIza")) return GEMINI_OPENAI_BASE_URL;
+  if (key.startsWith("AQ.")) return VERTEX_EXPRESS_BASE_URL;
   if (key.startsWith("gsk_")) return GROQ_OPENAI_BASE_URL;
   if (key.startsWith("sk-or-")) return OPENROUTER_BASE_URL;
   if (key.startsWith("aa-")) return AVALAI_BASE_URL;
@@ -84,20 +101,36 @@ export function inferBaseUrlFromApiKey(apiKey?: string | null): string | null {
   return null;
 }
 
+function isVertexExpressBaseUrl(url: string): boolean {
+  return /^https:\/\/aiplatform\.googleapis\.com\/v1(?:beta1)?\/publishers\/google\/models$/i.test(url);
+}
+
 /**
- * Normalizes common OpenAI-compatible provider base URLs so minor configuration
- * slips (trailing `/chat/completions`, missing `/v1` or `/openai`, or unset URL
- * with a recognizable Gemini/Groq/OpenRouter/AvalAI key) still route to the right endpoint.
+ * Normalizes common OpenAI-compatible & Google Vertex Express base URLs so minor
+ * configuration slips (trailing `/chat/completions`, missing `/v1` or `/openai`,
+ * or `AQ.` Vertex Express keys pointed at `generativelanguage.googleapis.com`)
+ * route cleanly to the working endpoint.
  */
 export function normalizeAiBaseUrl(rawBaseUrl?: string | null, apiKey?: string | null): string {
+  const key = apiKey?.trim() ?? "";
   const explicit = (rawBaseUrl?.trim() ?? "")
     .replace(/\/+$/, "")
     .replace(/\/chat\/completions$/i, "");
 
-  const base = explicit || inferBaseUrlFromApiKey(apiKey) || DEFAULT_BASE_URL;
+  // `AQ.` keys are Google Cloud Vertex AI Express Mode API keys: they use
+  // `aiplatform.googleapis.com` rather than `generativelanguage.googleapis.com`
+  // (where unbilled / EEA projects get `HTTP 429 limit: 0`).
+  if (key.startsWith("AQ.") && (!explicit || /generativelanguage\.googleapis\.com/i.test(explicit))) {
+    return VERTEX_EXPRESS_BASE_URL;
+  }
+
+  const base = explicit || inferBaseUrlFromApiKey(key) || DEFAULT_BASE_URL;
 
   if (/^https:\/\/generativelanguage\.googleapis\.com(?:\/v1beta)?$/i.test(base)) {
     return GEMINI_OPENAI_BASE_URL;
+  }
+  if (/^https:\/\/aiplatform\.googleapis\.com(?:\/v1(?:beta1)?)?(?:\/publishers\/google(?:\/models)?)?$/i.test(base)) {
+    return VERTEX_EXPRESS_BASE_URL;
   }
   if (/^https:\/\/api\.groq\.com(?:\/openai)?$/i.test(base)) {
     return GROQ_OPENAI_BASE_URL;
@@ -135,8 +168,44 @@ export function resolveAiProxyUrl(env: NodeJS.ProcessEnv = process.env): string 
   return raw || null;
 }
 
+/**
+ * Normalizes common Gemini model slug typos / retired 1.5 aliases (e.g.
+ * `gemini-3.0-flash` -> `gemini-3-flash-preview`, `gemini-1.5-flash` -> `gemini-2.5-flash`).
+ */
+export function normalizeGoogleModelId(rawModel: string): string {
+  const cleaned = rawModel
+    .trim()
+    .replace(/^(?:publishers\/google\/)?models\//i, "");
+  const lower = cleaned.toLowerCase();
+
+  if (lower === "gemini-3.0-flash" || lower === "gemini-3-flash" || lower === "gemini-3.0-flash-latest") {
+    return "gemini-3-flash-preview";
+  }
+  if (lower === "gemini-3.0-pro" || lower === "gemini-3-pro" || lower === "gemini-3.0-pro-latest") {
+    return "gemini-3-pro-preview";
+  }
+  if (lower === "gemini-2.5-flash-latest") return "gemini-2.5-flash";
+  if (lower === "gemini-2.0-flash-latest") return "gemini-2.0-flash";
+  if (lower === "gemini-1.5-flash" || lower === "gemini-1.5-flash-latest" || lower === "gemini-1.5-flash-8b") {
+    return "gemini-2.5-flash";
+  }
+  if (lower === "gemini-1.5-pro" || lower === "gemini-1.5-pro-latest") {
+    return "gemini-2.5-pro";
+  }
+  return cleaned;
+}
+
+function isGoogleProvider(baseUrl: string, apiKey?: string | null): boolean {
+  const key = apiKey?.trim() ?? "";
+  return (
+    /generativelanguage\.googleapis\.com|aiplatform\.googleapis\.com/i.test(baseUrl) ||
+    key.startsWith("AIza") ||
+    key.startsWith("AQ.")
+  );
+}
+
 function defaultModelForBaseUrl(baseUrl: string): string {
-  if (/generativelanguage\.googleapis\.com/i.test(baseUrl)) return DEFAULT_GEMINI_MODEL;
+  if (/generativelanguage\.googleapis\.com|aiplatform\.googleapis\.com/i.test(baseUrl)) return DEFAULT_GEMINI_MODEL;
   if (/api\.groq\.com/i.test(baseUrl)) return DEFAULT_GROQ_MODEL;
   if (/openrouter\.ai/i.test(baseUrl)) return DEFAULT_OPENROUTER_MODEL;
   if (/api\.x\.ai/i.test(baseUrl)) return DEFAULT_XAI_MODEL;
@@ -148,17 +217,19 @@ export function resolveEffectiveModel(
   options?: { baseUrl?: string; apiKey?: string | null; env?: NodeJS.ProcessEnv },
 ): string {
   const env = options?.env ?? process.env;
+  const apiKey = options?.apiKey ?? resolveAiApiKey(env);
+  const baseUrl = options?.baseUrl ?? resolveEffectiveBaseUrl(apiKey, env);
   const explicit = configModel?.trim() || env.AI_API_MODEL?.trim() || env.AI_MODEL?.trim();
-  if (explicit) return explicit;
+  if (explicit) {
+    return isGoogleProvider(baseUrl, apiKey) ? normalizeGoogleModelId(explicit) : explicit;
+  }
 
-  const baseUrl = options?.baseUrl ?? resolveEffectiveBaseUrl(options?.apiKey ?? resolveAiApiKey(env), env);
   return defaultModelForBaseUrl(baseUrl);
 }
 
 /**
- * Extracts a concise human-readable error message from OpenAI, Google Gemini
- * (`[{ error: { message } }]`), OpenRouter (`{ error: { message, metadata } }`),
- * or plain-text upstream error payloads.
+ * Extracts a concise human-readable error message from OpenAI, Google Gemini / Vertex
+ * (`[{ error: { message } }]` or `{ error: { message } }`), OpenRouter, or HTML gateways.
  */
 export function extractProviderErrorReason(rawBody: string): string | null {
   const trimmed = rawBody.trim();
@@ -176,12 +247,12 @@ export function extractProviderErrorReason(rawBody: string): string | null {
       const msg = typeof errObj.message === "string" ? errObj.message.trim() : "";
       const metaRaw =
         errObj.metadata &&
-        typeof errObj.metadata &&
+        typeof errObj.metadata === "object" &&
         typeof (errObj.metadata as Record<string, unknown>).raw === "string"
           ? ((errObj.metadata as Record<string, unknown>).raw as string).trim()
           : "";
       const combined = msg && metaRaw && !msg.includes(metaRaw) ? `${msg} (${metaRaw})` : msg || metaRaw;
-      if (combined) return combined.replace(/\s+/g, " ").slice(0, 280);
+      if (combined) return combined.replace(/\s+/g, " ").slice(0, 520);
     }
   } catch {
     // Non-JSON error body (e.g. Cloudflare / HTML 503 gateway page)
@@ -195,20 +266,22 @@ export function extractProviderErrorReason(rawBody: string): string | null {
     return "Upstream gateway returned an HTML error page.";
   }
 
-  return trimmed.replace(/\s+/g, " ").slice(0, 280);
+  return trimmed.replace(/\s+/g, " ").slice(0, 520);
 }
 
 /**
- * Extracts normalized token counts from an OpenAI-compatible `usage` object.
- * Returns null when the provider omitted usage metrics.
+ * Extracts normalized token counts from an OpenAI-compatible `usage` or Google
+ * `usageMetadata` object. Returns null when the provider omitted usage metrics.
  */
 export function extractTokenUsage(usagePayload: unknown): AiTokenUsage | null {
   if (!usagePayload || typeof usagePayload !== "object") return null;
   const raw = usagePayload as Record<string, unknown>;
 
-  const promptRaw = Number(raw.prompt_tokens ?? raw.promptTokens);
-  const completionRaw = Number(raw.completion_tokens ?? raw.completionTokens);
-  const totalRaw = Number(raw.total_tokens ?? raw.totalTokens);
+  const promptRaw = Number(raw.prompt_tokens ?? raw.promptTokens ?? raw.promptTokenCount);
+  const completionRaw = Number(
+    raw.completion_tokens ?? raw.completionTokens ?? raw.candidatesTokenCount,
+  );
+  const totalRaw = Number(raw.total_tokens ?? raw.totalTokens ?? raw.totalTokenCount);
 
   const hasPrompt = Number.isFinite(promptRaw) && promptRaw >= 0;
   const hasCompletion = Number.isFinite(completionRaw) && completionRaw >= 0;
@@ -241,6 +314,12 @@ export function mergeTokenUsage(
 function sanitizeSecrets(text: string, apiKey?: string, proxyUrl?: string | null): string {
   const key = apiKey?.trim() || resolveAiApiKey();
   let safe = key ? text.split(key).join("[REDACTED_API_KEY]") : text;
+  if (key) {
+    const encoded = encodeURIComponent(key);
+    if (encoded !== key) {
+      safe = safe.split(encoded).join("[REDACTED_API_KEY]");
+    }
+  }
   if (proxyUrl) {
     try {
       const parsed = new URL(proxyUrl);
@@ -263,7 +342,7 @@ function extractRetryWaitMs(detail: string, retryAfterHeader: string | null): nu
   }
 
   // Groq / Gemini commonly return: "Please try again in 7.86s." or "retryDelay: 5s"
-  const secondsMatch = detail.match(/(?:try again in|retry(?:Delay)?["\s:=]+)\s*([\d.]+)\s*s/i);
+  const secondsMatch = detail.match(/(?:try again in|Please retry in|retry(?:Delay)?["\s:=]+)\s*([\d.]+)\s*s/i);
   if (secondsMatch) {
     const seconds = Number(secondsMatch[1]);
     if (Number.isFinite(seconds) && seconds >= 0 && seconds <= 60) {
@@ -344,19 +423,66 @@ function shouldShrinkTokenBudget(status: number, detail: string): boolean {
   if (status === 413) return true;
   if (status === 402 && /max_tokens|fewer max_tokens|afford/i.test(detail)) return true;
   if (status === 400 && /max_tokens.*(?:exceed|maximum|limit|context)/i.test(detail)) return true;
-  if (status === 429 && /request too large|tokens per minute|tpm/i.test(detail)) return true;
+  if (status === 429 && /request too large|tokens per minute|\btpm\b/i.test(detail)) return true;
   return false;
 }
 
-function describeHttpStatusFa(status: number, model: string): string {
+/**
+ * True when HTTP 429 represents an account/project/model quota ceiling (`limit: 0`,
+ * billing disabled, or daily RPD exhausted) rather than a brief RPM burst.
+ * Sleeping 8–60s on the exact same model cannot fix this; switching models or
+ * surfacing the error immediately avoids 30s+ stalls.
+ */
+function isHardQuotaExhausted(status: number, detail: string): boolean {
+  if (status !== 429) return false;
+  return /exceeded your current quota|check your plan and billing|limit:\s*0\b|requests per day|tokens per day|per_day|PerDay/i.test(
+    detail,
+  );
+}
+
+function shouldTryFallbackModel(status: number, detail: string): boolean {
+  if (status === 404 || status === 429) return true;
+  if (status === 400 && /model.*(?:not found|not supported|decommissioned|does not exist|invalid)/i.test(detail)) {
+    return true;
+  }
+  return false;
+}
+
+function candidateModelsForProvider(baseUrl: string, initialModel: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (m: string) => {
+    const clean = m.trim();
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+    }
+  };
+
+  push(initialModel);
+  if (/generativelanguage\.googleapis\.com|aiplatform\.googleapis\.com/i.test(baseUrl)) {
+    for (const m of GEMINI_FALLBACK_MODELS) push(m);
+  } else if (/api\.groq\.com/i.test(baseUrl)) {
+    for (const m of GROQ_FALLBACK_MODELS) push(m);
+  }
+  return out;
+}
+
+function describeHttpStatusFa(status: number, model: string, detail?: string | null, apiKey?: string): string {
   if (status === 503 || status === 529) {
     return `سرویس هوش مصنوعی موقتاً در دسترس نیست یا مدل «${model}» شلوغ است (HTTP ${status}).`;
   }
   if (status === 429) {
+    if (detail && isHardQuotaExhausted(429, detail)) {
+      const isVertexKey = Boolean(apiKey?.trim().startsWith("AQ."));
+      return isVertexKey
+        ? `سهمیهٔ رایگان پروژهٔ Google Cloud برای این کلید (${model}) صفر یا تمام شده است (HTTP 429 Quota=0). یک کلید رایگان Groq (gsk_...) از console.groq.com یا کلید فعال Google AI Studio در AI_API_KEY قرار دهید.`
+        : `سهمیهٔ فعلی حساب/پروژه برای مدل «${model}» صفر یا تمام شده است (HTTP 429 — بدون Billing یا سقف روزانه پر شده). اگر سرور در اروپا (Frankfurt) است، کلید رایگان Groq (gsk_...) یا کلید دارای سهمیه فعال جایگزین کنید.`;
+    }
     return `سقف تعداد درخواست یا توکن سرویس هوش مصنوعی برای مدل «${model}» پر شده است (HTTP 429).`;
   }
   if (status === 401 || status === 403) {
-    return `کلید دسترسی یا مجوز سرویس هوش مصنوعی پذیرفته نشد (HTTP ${status}).`;
+    return `کلید دسترسی یا مجوز سرویس هوش مصنوعی پذیرفته نشد (HTTP ${status} — مدل: ${model}).`;
   }
   if (status === 402) {
     return `اعتبار حساب سرویس هوش مصنوعی کافی نیست (HTTP 402).`;
@@ -371,6 +497,216 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function performHttpPost(params: {
+  url: string;
+  headers: Record<string, string>;
+  bodyJson: string;
+  signal: AbortSignal;
+  customFetch: typeof fetch | null;
+  proxyUrl: string | null;
+}): Promise<Response> {
+  if (params.customFetch) {
+    return params.customFetch(params.url, {
+      method: "POST",
+      headers: params.headers,
+      body: params.bodyJson,
+      signal: params.signal,
+      cache: "no-store",
+    });
+  }
+  return (await undiciFetch(params.url, {
+    method: "POST",
+    headers: params.headers,
+    body: params.bodyJson,
+    signal: params.signal,
+    dispatcher: getAiDispatcher(params.proxyUrl),
+  })) as unknown as Response;
+}
+
+/**
+ * Native Google Cloud Vertex AI Express Mode (`AQ.` API key) `:generateContent`
+ * transport with automatic model fallback (`gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+ * `gemini-2.0-flash`, `gemini-3-flash-preview`).
+ */
+async function callVertexExpressGenerateContent(
+  params: {
+    apiKey: string;
+    initialModel: string;
+    systemPrompt: string;
+    userPrompt: string;
+    temperature: number;
+    maxTokens: number;
+    jsonMode: boolean;
+  },
+  options: {
+    customFetch: typeof fetch | null;
+    proxyUrl: string | null;
+    requestTimeoutMs: number;
+  },
+): Promise<CompletionResult> {
+  const candidates = candidateModelsForProvider(VERTEX_EXPRESS_BASE_URL, params.initialModel);
+  let lastStatus = 0;
+  let lastModel = params.initialModel;
+  let lastSafeDetail: string | null = null;
+  let lastConciseReason: string | null = null;
+
+  for (const model of candidates) {
+    lastModel = model;
+    let useThinkingBudget = /^gemini-2\.5-flash$/i.test(model);
+    let baseEndpoint = VERTEX_EXPRESS_BASE_URL;
+
+    for (let subAttempt = 0; subAttempt < 2; subAttempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.requestTimeoutMs);
+
+      try {
+        const generationConfig: Record<string, unknown> = {
+          maxOutputTokens: params.maxTokens,
+          temperature: params.temperature,
+        };
+        if (params.jsonMode) {
+          generationConfig.responseMimeType = "application/json";
+        }
+        if (useThinkingBudget) {
+          generationConfig.thinkingConfig = { thinkingBudget: 256 };
+        }
+
+        const requestBody: Record<string, unknown> = {
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: params.userPrompt }],
+            },
+          ],
+          generationConfig,
+        };
+        if (params.systemPrompt.trim()) {
+          requestBody.systemInstruction = {
+            parts: [{ text: params.systemPrompt }],
+          };
+        }
+
+        const targetUrl = `${baseEndpoint}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
+        const response = await performHttpPost({
+          url: targetUrl,
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": params.apiKey,
+          },
+          bodyJson: JSON.stringify(requestBody),
+          signal: controller.signal,
+          customFetch: options.customFetch,
+          proxyUrl: options.proxyUrl,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          const rawErr = await response.text().catch(() => "");
+          const safeDetail = sanitizeSecrets(rawErr, params.apiKey, options.proxyUrl);
+          const conciseReason = extractProviderErrorReason(safeDetail);
+
+          lastStatus = response.status;
+          lastSafeDetail = safeDetail;
+          lastConciseReason = conciseReason;
+
+          if (response.status === 400 && useThinkingBudget && /thinking/i.test(safeDetail)) {
+            useThinkingBudget = false;
+            continue;
+          }
+          if (response.status === 404 && baseEndpoint === VERTEX_EXPRESS_BASE_URL && !/preview/i.test(model)) {
+            baseEndpoint = VERTEX_EXPRESS_V1_BASE_URL;
+            continue;
+          }
+          // Try next candidate model on 404 / 429 / unsupported-model 400:
+          if (shouldTryFallbackModel(response.status, safeDetail)) {
+            break;
+          }
+          // Auth / permission errors (401/403) apply to the whole key/endpoint — stop cycling models.
+          return {
+            ok: false,
+            kind: "http_error",
+            message: describeHttpStatusFa(response.status, model, safeDetail, params.apiKey),
+            detail: conciseReason ?? (safeDetail || null),
+          };
+        }
+
+        const payload = (await response.json()) as {
+          candidates?: Array<{
+            finishReason?: string;
+            content?: { parts?: Array<{ text?: string; thought?: boolean }> };
+          }>;
+          usageMetadata?: unknown;
+        };
+
+        const parts = payload?.candidates?.[0]?.content?.parts ?? [];
+        const nonThoughtParts = parts.filter(
+          (part) => part && typeof part.text === "string" && part.thought !== true,
+        );
+        const chosenParts = nonThoughtParts.length > 0 ? nonThoughtParts : parts;
+        const rawContent = chosenParts
+          .map((part) => (typeof part?.text === "string" ? part.text : ""))
+          .join("")
+          .trim();
+
+        if (!rawContent) {
+          return {
+            ok: false,
+            kind: "api_error",
+            message: `پاسخ خالی از مدل «${model}» (Vertex AI) دریافت شد.`,
+            detail: payload?.candidates?.[0]?.finishReason
+              ? `finishReason: ${payload.candidates[0].finishReason}`
+              : null,
+          };
+        }
+
+        return {
+          ok: true,
+          rawText: rawContent,
+          model,
+          usage: extractTokenUsage(payload?.usageMetadata),
+        };
+      } catch (error) {
+        clearTimeout(timer);
+        const connectFail = isConnectOrDnsFailure(error);
+        if (connectFail.matched) {
+          const rawErrMsg =
+            error instanceof Error ? sanitizeSecrets(error.message, params.apiKey, options.proxyUrl) : "";
+          return {
+            ok: false,
+            kind: "network_error",
+            message: `اتصال شبکه/TLS به Vertex AI («${baseEndpoint}») برقرار نشد.`,
+            detail: [connectFail.code, rawErrMsg].filter(Boolean).join(" — ") || null,
+          };
+        }
+
+        const aborted =
+          error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+        if (aborted && model !== FAST_FALLBACK_GEMINI_MODEL) {
+          // Try a faster flash model in the candidate list
+          break;
+        }
+        return {
+          ok: false,
+          kind: aborted ? "timeout" : "network_error",
+          message: aborted
+            ? `زمان درخواست هوش مصنوعی به پایان رسید (${options.requestTimeoutMs}ms — مدل «${model}» در Vertex AI).`
+            : `خطای شبکه در اتصال به Vertex AI (${model}).`,
+          detail:
+            error instanceof Error ? sanitizeSecrets(error.message, params.apiKey, options.proxyUrl) : null,
+        };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    kind: "http_error",
+    message: describeHttpStatusFa(lastStatus || 429, lastModel, lastSafeDetail, params.apiKey),
+    detail: lastConciseReason ?? lastSafeDetail,
+  };
+}
+
 export async function callAiChatCompletion(
   params: {
     systemPrompt: string;
@@ -378,6 +714,8 @@ export async function callAiChatCompletion(
     model?: string;
     temperature: number;
     maxTokens: number;
+    /** Set false for plain-text helpers (grader, bulletin intro). Default: true. */
+    jsonMode?: boolean;
   },
   options?: {
     fetchImpl?: typeof fetch;
@@ -397,15 +735,42 @@ export async function callAiChatCompletion(
     };
   }
 
-  const baseUrl = resolveEffectiveBaseUrl(apiKey);
+  let baseUrl = resolveEffectiveBaseUrl(apiKey);
   const proxyUrl = resolveAiProxyUrl();
   let currentModel = resolveEffectiveModel(params.model, { baseUrl, apiKey });
   const customFetch = options?.fetchImpl ?? null;
   const retryBaseMs = options?.retryBaseDelayMs ?? 2_000;
   const requestTimeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
+  const jsonMode = params.jsonMode !== false;
 
-  let useJsonObjectFormat = true;
+  // Native Vertex AI Express path for `AQ.` keys or `aiplatform.googleapis.com` URLs:
+  if (isVertexExpressBaseUrl(baseUrl)) {
+    const vertexResult = await callVertexExpressGenerateContent(
+      {
+        apiKey,
+        initialModel: currentModel,
+        systemPrompt: params.systemPrompt,
+        userPrompt: params.userPrompt,
+        temperature: params.temperature,
+        maxTokens: params.maxTokens,
+        jsonMode,
+      },
+      { customFetch, proxyUrl, requestTimeoutMs },
+    );
+    if (vertexResult.ok || vertexResult.kind === "network_error" || vertexResult.kind === "timeout") {
+      return vertexResult;
+    }
+    // Secondary fallback: if an `AQ.` key was rejected on aiplatform.googleapis.com,
+    // also probe generativelanguage.googleapis.com once before failing.
+    baseUrl = GEMINI_OPENAI_BASE_URL;
+  }
+
+  const fallbackPool = candidateModelsForProvider(baseUrl, currentModel);
+  let fallbackIndex = 0;
+  let modelFallbacksUsed = 0;
+
+  let useJsonObjectFormat = jsonMode;
   let useMaxCompletionTokens = false;
   let includeTemperature = true;
   let reasoningEffort = defaultReasoningEffortForModel(currentModel);
@@ -453,28 +818,17 @@ export async function callAiChatCompletion(
         requestBody.response_format = { type: "json_object" };
       }
 
-      const targetUrl = `${baseUrl}/chat/completions`;
-      const headers = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      };
-      const bodyJson = JSON.stringify(requestBody);
-
-      const response: Response = customFetch
-        ? await customFetch(targetUrl, {
-            method: "POST",
-            headers,
-            body: bodyJson,
-            signal: controller.signal,
-            cache: "no-store",
-          })
-        : ((await undiciFetch(targetUrl, {
-            method: "POST",
-            headers,
-            body: bodyJson,
-            signal: controller.signal,
-            dispatcher: getAiDispatcher(proxyUrl),
-          })) as unknown as Response);
+      const response = await performHttpPost({
+        url: `${baseUrl}/chat/completions`,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        bodyJson: JSON.stringify(requestBody),
+        signal: controller.signal,
+        customFetch,
+        proxyUrl,
+      });
 
       clearTimeout(timer);
 
@@ -521,12 +875,45 @@ export async function callAiChatCompletion(
           continue;
         }
 
-        // 4) Retry rate-limit (429) and transient server/overload statuses (500/502/503/504/529)
+        // 4) Per-model quota (`429`) or missing/decommissioned model (`404`/`400`):
+        //    immediately rotate to the next provider fallback model without sleeping.
+        if (
+          shouldTryFallbackModel(response.status, safeDetail) &&
+          fallbackIndex + 1 < fallbackPool.length &&
+          modelFallbacksUsed < MAX_MODEL_FALLBACK_HOPS
+        ) {
+          fallbackIndex += 1;
+          modelFallbacksUsed += 1;
+          const prevModel = currentModel;
+          currentModel = fallbackPool[fallbackIndex];
+          reasoningEffort = defaultReasoningEffortForModel(currentModel);
+          console.warn(
+            `[ai] Switching model "${prevModel}" -> "${currentModel}" after HTTP ${response.status}.`,
+          );
+          attempt -= 1; // Do not consume transient retry budget on model rotation
+          continue;
+        }
+
+        // 5) Hard quota ceiling (`limit: 0` / billing disabled / daily RPD exhausted):
+        //    never sleep 8–60s when no fallback models remain.
+        if (isHardQuotaExhausted(response.status, safeDetail)) {
+          return {
+            ok: false,
+            kind: "http_error",
+            message: describeHttpStatusFa(response.status, currentModel, safeDetail, apiKey),
+            detail: conciseReason ?? (safeDetail || null),
+          };
+        }
+
+        // 6) Retry transient rate-limit (RPM 429) and server/overload statuses (500/502/503/504/529)
         if (TRANSIENT_HTTP_STATUSES.has(response.status) && attempt < maxRetries) {
           const providerWaitMs = extractRetryWaitMs(safeDetail, response.headers.get("retry-after"));
           const fallbackBackoffMs =
             response.status === 429 ? 8_000 : retryBaseMs * Math.pow(2, attempt);
-          const waitMs = (providerWaitMs ?? fallbackBackoffMs) + (response.status === 429 ? RATE_LIMIT_BUFFER_MS : 0);
+          const waitMs = Math.min(
+            15_000,
+            (providerWaitMs ?? fallbackBackoffMs) + (response.status === 429 ? RATE_LIMIT_BUFFER_MS : 0),
+          );
 
           console.warn(
             `[ai] Upstream HTTP ${response.status} for model "${currentModel}". Retrying in ${waitMs}ms ` +
@@ -540,7 +927,7 @@ export async function callAiChatCompletion(
         return {
           ok: false,
           kind: "http_error",
-          message: describeHttpStatusFa(response.status, currentModel),
+          message: describeHttpStatusFa(response.status, currentModel, safeDetail, apiKey),
           detail: conciseReason ?? (safeDetail || null),
         };
       }

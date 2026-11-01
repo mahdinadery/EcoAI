@@ -526,9 +526,8 @@ export function AiConfigConsole({ adminKey }: Props) {
       <section className="rounded-2xl border border-line/80 bg-surface p-5 shadow-sm shadow-line/40 sm:p-6">
         <h2 className="text-base font-bold text-ink">قوانین تصمیم‌گیری (Decision Rules)</h2>
         <p className="mt-1 text-sm text-muted">
-          این آستانه‌ها فقط به هوش مصنوعی می‌گویند چگونه فیلد <code className="rounded bg-surface-3 px-1">shouldSend</code> را
-          پیشنهاد دهد. این پیشنهاد به‌تنهایی هیچ ارسالی انجام نمی‌دهد؛ قوانین ارسال خودکار واقعی جدا و در بخش Agent
-          تنظیم می‌شوند.
+          این آستانه‌ها هم به هوش مصنوعی می‌گویند چگونه فیلد <code className="rounded bg-surface-3 px-1">shouldSend</code> را
+          پیشنهاد دهد و هم به‌عنوان کفِ اجباری (حداقل امتیاز مجاز) روی تمام مسیرهای ارسال خودکار و زمان‌بندی‌شده اعمال می‌شوند.
         </p>
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

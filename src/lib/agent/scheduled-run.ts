@@ -32,6 +32,7 @@ import { ingestAllActiveSources, ingestSearchItems } from "@/lib/news/source-ing
 import { and, asc, desc, eq, gte, inArray, isNotNull, notExists, sql } from "drizzle-orm";
 import { runAutoDeliveryPass } from "./index";
 import { evaluateArticle, type AutoSendRule } from "./rules";
+import { applyActiveSendFloors } from "./resolve-rule";
 import type {
   AgentRunSummary,
   AgentScheduleConfig,
@@ -146,7 +147,7 @@ export async function selectSendCandidates(
  * article that would fail the single-message path.
  */
 async function selectBulletinCandidates(config: AgentScheduleConfig): Promise<NewsRow[]> {
-  const rule = scheduleToRule(config);
+  const rule = await applyActiveSendFloors(scheduleToRule(config));
   // Rank the whole eligible daily pool, not the first 50 newest IDs.
   const rows = await db.select().from(news).where(and(
     isNotNull(news.analyzedAt),
@@ -514,7 +515,7 @@ async function executeScheduledPass(args: {
     await recoverStaleProcessing();
     const swept = await sweepOfftopicBacklog();
 
-    const selected = await selectAnalysisBacklog(args.config.maxAnalyze);
+    const selected = await selectAnalysisBacklog(args.config.maxAnalyze, [], { skipSweep: true });
     const gated = await applyTopicGate(selected);
     const results = await analyzeSequentially(gated.pass);
 
@@ -575,9 +576,10 @@ async function executeScheduledPass(args: {
     // single | both — send everything analyzed and not yet delivered.
     try {
       const candidates = await selectSendCandidates(args.config);
+      const effectiveRule = await applyActiveSendFloors(scheduleToRule(args.config));
       const result = await runAutoDeliveryPass({
         newsIds: candidates,
-        rule: scheduleToRule(args.config),
+        rule: effectiveRule,
       });
 
       send = {

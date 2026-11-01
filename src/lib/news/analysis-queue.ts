@@ -148,10 +148,16 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number }> {
  * dated articles from timely AI-economics feeds are never starved), followed by
  * previously FAILED unanalyzed items.
  */
-export async function selectAnalysisBacklog(limit: number, excludeIds: string[] = []): Promise<string[]> {
+export async function selectAnalysisBacklog(
+  limit: number,
+  excludeIds: string[] = [],
+  options: { skipSweep?: boolean } = {},
+): Promise<string[]> {
   if (limit <= 0) return [];
 
-  await sweepOfftopicBacklog();
+  if (!options.skipSweep) {
+    await sweepOfftopicBacklog();
+  }
 
   const rows = await db
     .select({ id: news.id })
@@ -176,10 +182,16 @@ export async function selectAnalysisBacklog(limit: number, excludeIds: string[] 
   return rows.map((row) => row.id);
 }
 
-function isFatalProviderConfigFailure(code: string | null, detail: string | null): boolean {
+function isFatalProviderConfigFailure(
+  code: string | null,
+  message: string | null,
+  detail: string | null,
+): boolean {
   if (code === "missing_key" || code === "timeout" || code === "network_error") return true;
-  if (code === "http_error" && detail) {
-    return /^HTTP\s+(401|402|403|404)\b/i.test(detail.trim());
+  if (code === "http_error") {
+    const combined = `${message ?? ""} ${detail ?? ""}`;
+    if (/\bHTTP\s+(401|402|403|404|429)\b/i.test(combined)) return true;
+    if (/exceeded your current quota|limit:\s*0\b|invalid api key|unauthorized/i.test(combined)) return true;
   }
   return false;
 }
@@ -215,7 +227,7 @@ export async function analyzeSequentially(
       };
       results.push(entry);
 
-      if (!entry.ok && isFatalProviderConfigFailure(entry.code, entry.detail)) {
+      if (!entry.ok && isFatalProviderConfigFailure(entry.code, entry.message, entry.detail)) {
         break;
       }
     } catch (error) {

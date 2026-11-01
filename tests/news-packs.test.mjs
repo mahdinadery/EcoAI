@@ -12,7 +12,9 @@ import {
   mergePackTopics,
   normalizeSourceUrl,
   normalizeTopicLabel,
+  upgradeLegacyPackTopicFilter,
 } from "../src/lib/news/news-packs.ts";
+import { evaluateTopicFilter } from "../src/lib/news/topic-filter.ts";
 
 test("ai-economics pack is internally consistent and saveable", () => {
   const pack = AI_ECONOMICS_PACK;
@@ -191,9 +193,10 @@ test("ai-economics pack covers core Economics of AI keywords and authoritative s
   for (const key of [
     "economics of ai",
     "ai productivity",
-    "labor market",
+    "ai and jobs",
+    "task automation",
     "semiconductor",
-    "capex",
+    "ai capex",
     "ai investment",
     "ai regulation",
   ]) {
@@ -204,4 +207,97 @@ test("ai-economics pack covers core Economics of AI keywords and authoritative s
   assert.ok(sourceHosts.some((h) => h.includes("nber.org")));
   assert.ok(sourceHosts.some((h) => h.includes("technologyreview.com")));
   assert.ok(sourceHosts.some((h) => h.includes("project-syndicate.org")));
+});
+
+test("ai-economics pack topic gate rejects off-topic NBER general economics papers while passing AI-economics articles", () => {
+  const activeFilter = {
+    enabled: true,
+    topics: AI_ECONOMICS_PACK.topics.map((t) => ({ ...t, enabled: true })),
+    blockedKeywords: [...AI_ECONOMICS_PACK.blockedKeywords],
+  };
+
+  // Exact NBER off-topic working paper from user screenshot + general economics papers:
+  const offTopicPapers = [
+    {
+      title: "College Success: Understanding the Roles of Financial Aid, Loans, and Student Support",
+      description:
+        "Using administrative data from higher education, we estimate how financial aid packages affect human capital accumulation, labor market earnings, and wage inequality.",
+      content: null,
+    },
+    {
+      title: "Monetary Policy, Housing Supply, and Economic Growth Across Metropolitan Labor Markets",
+      description:
+        "We study mortgage rate transmission, venture capital flows, monopoly market power, and competition policy in retail.",
+      content: null,
+    },
+  ];
+
+  for (const paper of offTopicPapers) {
+    const verdict = evaluateTopicFilter(paper, activeFilter);
+    assert.notEqual(
+      verdict.verdict,
+      "pass",
+      `expected off-topic paper "${paper.title}" to be filtered out, but matched: ${JSON.stringify(verdict)}`,
+    );
+  }
+
+  // Genuine Economics of AI articles must pass:
+  const onTopicPapers = [
+    {
+      title: "Generative AI, Task Automation, and the Macroeconomics of Productivity Growth",
+      description:
+        "Daron Acemoglu and Erik Brynjolfsson evaluate how large language model adoption reshapes wage inequality and firm productivity.",
+      content: null,
+    },
+    {
+      title: "Hyperscaler AI Capex, NVIDIA GPU Bottlenecks, and Token Inference Cost Curves",
+      description: "An empirical analysis of data center investment and unit economics in foundation models.",
+      content: null,
+    },
+  ];
+
+  for (const paper of onTopicPapers) {
+    const verdict = evaluateTopicFilter(paper, activeFilter);
+    assert.equal(verdict.verdict, "pass", `expected AI-economics paper "${paper.title}" to pass`);
+  }
+});
+
+test("upgradeLegacyPackTopicFilter replaces retired pack-econ-* and stale pack-aiecon-* keywords while keeping custom topics", () => {
+  const legacyFilter = {
+    enabled: true,
+    topics: [
+      {
+        id: "pack-econ-labor",
+        label: "بازار کار قدیمی",
+        enabled: true,
+        keywords: ["labor market", "human capital", "financial aid"],
+      },
+      {
+        id: "pack-aiecon-labor-workforce",
+        label: "بازار کار، مشاغل، دستمزد و سرمایه انسانی",
+        enabled: false,
+        keywords: ["labor market", "workforce", "human capital"],
+      },
+      {
+        id: "custom-operator-topic",
+        label: "موضوع سفارشی ادمین",
+        enabled: true,
+        keywords: ["anthropic claude enterprise"],
+      },
+    ],
+    blockedKeywords: ["sports"],
+  };
+
+  const upgraded = upgradeLegacyPackTopicFilter(legacyFilter);
+  assert.ok(!upgraded.topics.some((t) => t.id.startsWith("pack-econ-")), "retired pack-econ-* must be removed");
+  assert.ok(upgraded.topics.some((t) => t.id === "custom-operator-topic"), "custom operator topic must be preserved");
+
+  const laborTopic = upgraded.topics.find((t) => t.id === "pack-aiecon-labor-workforce");
+  assert.ok(laborTopic);
+  assert.equal(laborTopic.enabled, false, "disabled state of pack-aiecon-* topic must be respected");
+  assert.ok(!laborTopic.keywords.includes("labor market"), "broad non-AI keyword must be purged");
+
+  // Filter without any pack topics (e.g. DEFAULT_TOPIC_FILTER) stays completely untouched:
+  const emptyFilter = { enabled: false, topics: [], blockedKeywords: [] };
+  assert.equal(upgradeLegacyPackTopicFilter(emptyFilter), emptyFilter);
 });

@@ -33,7 +33,15 @@ export async function POST(
       );
     }
 
-    const result = await analyzeArticle(id);
+    let force = false;
+    try {
+      const body = (await request.json()) as { force?: unknown };
+      force = body?.force === true;
+    } catch {
+      // Empty body is valid for standard POST calls.
+    }
+
+    const result = await analyzeArticle(id, { force });
 
     if (result.ok) {
       // Auto-delivery: the freshly analyzed article is evaluated against the rule.

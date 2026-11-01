@@ -8,6 +8,7 @@
  */
 
 import { validateBulletinSettings } from "../delivery/bulletin";
+import { upgradeLegacyPackTopicFilter } from "../news/news-packs";
 import { db } from "@/db";
 import { aiConfigurations, type AiConfigurationRow } from "@/db/schema";
 import { and, desc, eq } from "drizzle-orm";
@@ -88,7 +89,7 @@ function toActiveConfig(row: AiConfigurationRow): ActiveAiConfig {
     outputSchema: normalized.outputSchema,
     publishingTemplate: upgradeLegacyTemplateFooter(row.publishingTemplate ?? ""),
     // Rows written before these columns existed read as null -> safe defaults.
-    topicFilter: row.topicFilter ?? DEFAULT_TOPIC_FILTER,
+    topicFilter: upgradeLegacyPackTopicFilter(row.topicFilter ?? DEFAULT_TOPIC_FILTER),
     autoSendPolicy: row.autoSendPolicy ?? DEFAULT_AUTO_SEND_POLICY,
     isActive: row.isActive,
     version: row.version,
@@ -141,7 +142,7 @@ export async function readActiveOperationalSettings(): Promise<{
 
     if (!active) return null;
     return {
-      topicFilter: active.topicFilter ?? DEFAULT_TOPIC_FILTER,
+      topicFilter: upgradeLegacyPackTopicFilter(active.topicFilter ?? DEFAULT_TOPIC_FILTER),
       autoSendPolicy: active.autoSendPolicy ?? DEFAULT_AUTO_SEND_POLICY,
     };
   } catch {

@@ -174,6 +174,7 @@ export function ScheduleCard({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [testingAi, setTestingAi] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [lastRun, setLastRun] = useState<RunSummary | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -376,11 +377,15 @@ export function ScheduleCard({
       }
 
       setLastRun(data.summary);
+      const errLines =
+        data.summary.errors.length > 0
+          ? `\n${data.summary.errors.map((err) => `• ${err}`).join("\n")}`
+          : "";
       setMessage({
         kind: data.summary.ok ? "ok" : "err",
         text: `اجرای فوری تمام شد: ${data.summary.analysis?.analyzed ?? 0} تحلیل، ${data.summary.send?.sent ?? 0} ارسال${
           data.summary.errors.length > 0 ? ` — ${data.summary.errors.length} خطا` : ""
-        }.`,
+        }.${errLines}`,
       });
       onRunComplete?.();
       void load();
@@ -388,6 +393,52 @@ export function ScheduleCard({
       setMessage({ kind: "err", text: "ارتباط با سرور برقرار نشد." });
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function handleTestAi() {
+    if (testingAi) return;
+    setTestingAi(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch("/api/ai/diagnostics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminKey) },
+        body: "{}",
+      });
+      const data = (await response.json()) as {
+        success?: boolean;
+        ok?: boolean;
+        keyHint?: string | null;
+        baseUrl?: string;
+        effectiveModel?: string;
+        latencyMs?: number;
+        message?: string;
+        detail?: string | null;
+      };
+
+      if (response.status === 401) {
+        setMessage({
+          kind: "err",
+          text: "تست اتصال AI به کلید مدیریتی نیاز دارد (یک‌بار با ?key=... وارد شوید).",
+        });
+        return;
+      }
+
+      const routeLine = `\nمسیر فعال: ${data.effectiveModel ?? "—"} @ ${data.baseUrl ?? "—"}${
+        data.keyHint ? ` | کلید: ${data.keyHint}` : ""
+      }`;
+      const detailLine = !data.ok && data.detail ? `\nجزئیات فنی: ${data.detail}` : "";
+
+      setMessage({
+        kind: data.ok ? "ok" : "err",
+        text: `${data.ok ? "✅" : "❌"} ${data.message ?? "تست اتصال انجام شد."}${routeLine}${detailLine}`,
+      });
+    } catch {
+      setMessage({ kind: "err", text: "ارتباط با سرور هنگام تست اتصال AI برقرار نشد." });
+    } finally {
+      setTestingAi(false);
     }
   }
 
@@ -433,6 +484,14 @@ export function ScheduleCard({
             type="button"
           >
             {running ? "در حال اجرا…" : "اجرای فوری چرخه کامل"}
+          </button>
+          <button
+            className="rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-sm font-bold text-ink-soft transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={testingAi}
+            onClick={handleTestAi}
+            type="button"
+          >
+            {testingAi ? "در حال تست AI…" : "تست اتصال AI"}
           </button>
           <button
             className="rounded-xl border border-accent bg-accent-soft px-4 py-2.5 text-sm font-bold text-accent-ink transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-60"

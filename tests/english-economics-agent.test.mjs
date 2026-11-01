@@ -15,7 +15,13 @@ import {
   DEFAULT_PUBLISHING_TEMPLATE,
   DEFAULT_SYSTEM_PROMPT,
   LEGACY_GENERAL_ECON_SYSTEM_PROMPT,
+  LEGACY_MAIN_EVENT_PUBLISHING_TEMPLATE,
+  LEGACY_PROSE_AIECON_SYSTEM_PROMPT,
+  LEGACY_PROSE_SUMMARY_INSTRUCTION,
+  SUMMARY_DEFAULT_INSTRUCTION,
+  upgradeLegacySummaryInstruction,
   upgradeLegacySystemPrompt,
+  upgradeLegacyTemplateFooter,
 } from "../src/lib/ai/config-types.ts";
 import { buildNewsMessage, formatBilingualTitle } from "../src/lib/delivery/message.ts";
 import { buildBulletinMessage } from "../src/lib/delivery/bulletin.ts";
@@ -127,30 +133,41 @@ test("parseFeed handles Atom <feed>/<entry> with <summary>, <content> and rel=al
   assert.equal(parsed.items[0].content, "Detailed empirical evidence from cross-country manufacturing panels.");
 });
 
-test("parseAiOutput parses translatedTitle + Persian summary and renders bilingual Bale message", () => {
+test("parseAiOutput parses translatedTitle + structured 4-question Persian summary and renders clean Bale message", () => {
   const aiJson = JSON.stringify({
-    translatedTitle: "چرا نرخ بهرهٔ خنثی بالاتر در حال بازآرایی سیاست مالی جهان است",
-    summary:
-      "این مقاله نشان می‌دهد که تغییرات ساختاری جمعیتی، سرمایه‌گذاری در گذار سبز و هزینه‌های دفاعی، نرخ بهرهٔ حقیقی خنثی را بالاتر از سطح پیش از همه‌گیری نگه داشته است؛ در نتیجه دولت‌ها دیگر نمی‌توانند به استقراض ارزان برای تثبیت نسبت بدهی به تولید ناخالص داخلی تکیه کنند.",
-    category: "سیاست پولی و بانک مرکزی",
+    translatedTitle: "هوش مصنوعی مولد و بهره‌وری نیروی کار: شواهد میدانی از مراکز پشتیبانی",
+    summary: [
+      "**❓ پرسش پژوهش:** آیا دسترسی کارشناسان به دستیار هوش مصنوعی مولد باعث افزایش بهره‌وری و کیفیت خدمات می‌شود؟",
+      "**📊 داده‌ها:** داده‌های عملکرد ماهانهٔ ۵٬۱۷۹ کارشناس پشتیبانی در یک شرکت نرم‌افزاری طی یک سال.",
+      "**🔬 روش:** راه‌اندازی تدریجی (Staggered Rollout) و برآورد تفاضل در تفاضل (DiD).",
+      "**📈 نتایج:** بهره‌وری میانگین ۱۴٪ و در نیروهای تازه‌کار ۳۴٪ افزایش یافت و نرخ ترک خدمت کاهش پیدا کرد.",
+    ].join("\n"),
+    category: "بازار کار و مشاغل",
     importance: 88,
     relevance: 94,
     novelty: 82,
-    mainEvent: "افزایش ساختاری نرخ بهرهٔ خنثی فشار پایداری بدهی دولت‌ها را در اقتصاد جهانی تشدید کرده است.",
+    mainEvent: "افزایش ۱۴ درصدی بهره‌وری با هوش مصنوعی مولد در مطالعهٔ میدانی.",
     whyItMatters:
-      "بالا ماندن هزینهٔ استقراض دولتی فضای مالی کشورها را محدود کرده و هماهنگی سیاست پولی و مالی بانک‌های مرکزی را دشوارتر می‌کند.",
-    hashtags: "#اقتصاد_کلان #سیاست_پولی #بدهی_عمومی",
-    entities: ["صندوق بین‌المللی پول", "فدرال رزرو"],
+      "برخلاف موج‌های قبلی اتوماسیون، هوش مصنوعی مولد با انتقال ضمنی مهارت نیروهای خبره به تازه‌کاران شکاف بهره‌وری درون‌بنگاهی را کاهش می‌دهد.",
+    hashtags: "#اقتصاد_هوش_مصنوعی #بهره‌وری #بازار_کار",
+    entities: ["دفتر ملی پژوهش اقتصادی آمریکا", "استنفورد"],
     shouldSend: true,
-    reason: "مقاله تحلیلی عمیق با استدلال روشن دربارهٔ نرخ بهرهٔ خنثی و سیاست مالی جهانی.",
+    reason: "پژوهش تجربی تراز اول با داده و روش مشخص دربارهٔ اثر هوش مصنوعی بر بهره‌وری نیروی کار.",
   });
 
   const parsed = parseAiOutput(aiJson, DEFAULT_OUTPUT_SCHEMA);
-  assert.equal(parsed.translatedTitle, "چرا نرخ بهرهٔ خنثی بالاتر در حال بازآرایی سیاست مالی جهان است");
+  assert.equal(parsed.translatedTitle, "هوش مصنوعی مولد و بهره‌وری نیروی کار: شواهد میدانی از مراکز پشتیبانی");
   assert.equal(parsed.shouldSend, true);
+  // Markdown bold `**` around labels is stripped cleanly while `\n` line breaks stay intact:
+  assert.ok(!parsed.summary.includes("**"));
+  assert.equal(parsed.summary.split("\n").length, 4);
+  assert.ok(parsed.summary.includes("❓ پرسش پژوهش:"));
+  assert.ok(parsed.summary.includes("📊 داده‌ها:"));
+  assert.ok(parsed.summary.includes("🔬 روش:"));
+  assert.ok(parsed.summary.includes("📈 نتایج:"));
 
   const articleRow = {
-    title: "Why Higher Neutral Interest Rates Are Reshaping Global Fiscal Policy",
+    title: "Generative AI at Work",
     translatedTitle: parsed.translatedTitle,
     summary: parsed.summary,
     category: parsed.category,
@@ -161,30 +178,40 @@ test("parseAiOutput parses translatedTitle + Persian summary and renders bilingu
     whyItMatters: parsed.whyItMatters,
     hashtags: parsed.hashtags,
     entityTags: parsed.entities,
-    source: "IMF Blog",
-    url: "https://www.imf.org/en/Blogs/Articles/2026/10/28/neutral-rates",
+    source: "NBER",
+    url: "https://www.nber.org/papers/w31161",
     publishedAt: new Date("2026-10-28T10:00:00Z"),
   };
 
-  // 1) Default publishing template renders bilingual title + Persian summary + link + hashtags
+  // 1) Default publishing template renders bilingual title + 4-line structured summary + whyItMatters (without redundant mainEvent)
   const templated = renderPublishingMessage(DEFAULT_PUBLISHING_TEMPLATE, articleRow);
-  assert.ok(templated.includes("📰 سیاست پولی و بانک مرکزی"));
-  assert.ok(templated.includes("🇮🇷 چرا نرخ بهرهٔ خنثی بالاتر در حال بازآرایی سیاست مالی جهان است"));
-  assert.ok(templated.includes("🌐 Why Higher Neutral Interest Rates Are Reshaping Global Fiscal Policy"));
-  assert.ok(templated.includes("نرخ بهرهٔ حقیقی خنثی"));
+  assert.ok(templated.includes("📰 بازار کار و مشاغل"));
+  assert.ok(templated.includes("🇮🇷 هوش مصنوعی مولد و بهره‌وری نیروی کار: شواهد میدانی از مراکز پشتیبانی"));
+  assert.ok(templated.includes("🌐 Generative AI at Work"));
+  assert.ok(templated.includes("❓ پرسش پژوهش:"));
+  assert.ok(templated.includes("\n📊 داده‌ها:"));
+  assert.ok(templated.includes("\n🔬 روش:"));
+  assert.ok(templated.includes("\n📈 نتایج:"));
+  assert.ok(!templated.includes("\\*\\*"), "must not leak escaped asterisks into Bale message");
   assert.ok(templated.includes("چرا مهم است:"));
-  assert.ok(templated.includes("محور اصلی مقاله:"));
-  assert.ok(templated.includes("[لینک اصلی خبر](https://www.imf.org/en/Blogs/Articles/2026/10/28/neutral-rates)"));
-  assert.ok(templated.includes("#اقتصاد_کلان #سیاست_پولی #بدهی_عمومی"));
+  assert.ok(!templated.includes("محور اصلی مقاله:"), "redundant mainEvent block must be omitted from default template");
+  assert.ok(templated.includes("[لینک اصلی خبر](https://www.nber.org/papers/w31161)"));
+  assert.ok(templated.includes("#اقتصاد_هوش_مصنوعی #بهره‌وری #بازار_کار"));
 
-  // 2) Built-in fallback message also renders bilingual title
+  // Custom templates explicitly requesting `{mainEvent}` still render it cleanly:
+  const customWithMain = renderPublishingMessage("{title}\nمحور: {mainEvent}", articleRow);
+  assert.ok(customWithMain.includes("محور: افزایش ۱۴ درصدی بهره‌وری"));
+
+  // 2) Built-in fallback message preserves multiline structured summary + bilingual title
   const fallbackMsg = buildNewsMessage(articleRow);
-  assert.ok(fallbackMsg.includes("🇮🇷 چرا نرخ بهرهٔ خنثی بالاتر"));
-  assert.ok(fallbackMsg.includes("🌐 Why Higher Neutral Interest Rates"));
+  assert.ok(fallbackMsg.includes("🇮🇷 هوش مصنوعی مولد و بهره‌وری نیروی کار"));
+  assert.ok(fallbackMsg.includes("🌐 Generative AI at Work"));
+  assert.ok(fallbackMsg.includes("❓ پرسش پژوهش:"));
+  assert.ok(fallbackMsg.includes("\n📈 نتایج:"));
 
-  // 3) Bulletin renders bilingual title per item
+  // 3) Bulletin preserves structured lines including `📈 نتایج:` without truncating at 300 chars
   const bulletinMsg = buildBulletinMessage({
-    intro: "محور اصلی مقالات امروز، تعامل نرخ بهرهٔ خنثی و پایداری مالی دولت‌ها بود.",
+    intro: "محور اصلی مقالات امروز، شواهد تجربی اثر هوش مصنوعی مولد بر بهره‌وری نیروی کار بود.",
     items: [
       {
         id: "1",
@@ -202,8 +229,10 @@ test("parseAiOutput parses translatedTitle + Persian summary and renders bilingu
     generatedAt: new Date("2026-10-29T08:00:00Z"),
     timezone: "Asia/Tehran",
   });
-  assert.ok(bulletinMsg.includes("1️⃣ چرا نرخ بهرهٔ خنثی بالاتر"));
-  assert.ok(bulletinMsg.includes("🌐 Why Higher Neutral Interest Rates"));
+  assert.ok(bulletinMsg.includes("1️⃣ هوش مصنوعی مولد و بهره‌وری نیروی کار"));
+  assert.ok(bulletinMsg.includes("🌐 Generative AI at Work"));
+  assert.ok(bulletinMsg.includes("❓ پرسش پژوهش:"));
+  assert.ok(bulletinMsg.includes("\n📈 نتایج:"));
 });
 
 test("formatBilingualTitle avoids duplicating identical single-language titles", () => {
@@ -223,12 +252,23 @@ test("db-ensure includes additive translated_title columns on news and ai_analys
   assert.ok(STEPS.some((s) => s.name === "column ai_analyses.translated_title" && s.sql.includes("IF NOT EXISTS")));
 });
 
-test("upgradeLegacySystemPrompt auto-upgrades untouched Version 1 prompts to Economics of AI while preserving custom edits", () => {
+test("upgradeLegacySystemPrompt, upgradeLegacySummaryInstruction & upgradeLegacyTemplateFooter auto-upgrade untouched defaults while preserving custom edits", () => {
   assert.equal(upgradeLegacySystemPrompt(LEGACY_GENERAL_ECON_SYSTEM_PROMPT), DEFAULT_SYSTEM_PROMPT);
+  assert.equal(upgradeLegacySystemPrompt(LEGACY_PROSE_AIECON_SYSTEM_PROMPT), DEFAULT_SYSTEM_PROMPT);
   assert.ok(DEFAULT_SYSTEM_PROMPT.includes("اقتصاد هوش مصنوعی"));
-  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("The Economics of AI"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("❓ پرسش پژوهش:"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("📊 داده‌ها:"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("🔬 روش:"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("📈 نتایج:"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("⚙️ سازوکار اقتصادی:"));
   assert.equal(
     upgradeLegacySystemPrompt("پرامپت سفارشی اپراتور برای تحلیل خاص"),
     "پرامپت سفارشی اپراتور برای تحلیل خاص",
   );
+
+  assert.equal(upgradeLegacySummaryInstruction(LEGACY_PROSE_SUMMARY_INSTRUCTION), SUMMARY_DEFAULT_INSTRUCTION);
+  assert.equal(upgradeLegacySummaryInstruction("دستور خلاصهٔ سفارشی"), "دستور خلاصهٔ سفارشی");
+
+  assert.equal(upgradeLegacyTemplateFooter(LEGACY_MAIN_EVENT_PUBLISHING_TEMPLATE), DEFAULT_PUBLISHING_TEMPLATE);
+  assert.equal(upgradeLegacyTemplateFooter("{title}\nمحور سفارشی: {mainEvent}"), "{title}\nمحور سفارشی: {mainEvent}");
 });

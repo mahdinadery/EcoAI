@@ -51,9 +51,6 @@ export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
 چرا مهم است:
 {whyItMatters}
 
-محور اصلی مقاله:
-{mainEvent}
-
 اهمیت: {importanceScore} از ۱۰۰
 
 {originalUrl}

@@ -26,6 +26,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
   DEFAULT_TOPIC_FILTER,
+  upgradeLegacySummaryInstruction,
   upgradeLegacySystemPrompt,
   upgradeLegacyTemplateFooter,
   upgradeLegacyWhyItMattersInstruction,
@@ -51,6 +52,11 @@ function withMissingConfigParts(
   for (const key of AI_FEATURE_ORDER) {
     if (!mergedFeatures[key]) {
       mergedFeatures[key] = { ...DEFAULT_FEATURES[key] };
+    } else if (key === "summary") {
+      mergedFeatures[key] = {
+        ...mergedFeatures[key],
+        instruction: upgradeLegacySummaryInstruction(mergedFeatures[key].instruction),
+      };
     } else if (key === "whyItMatters") {
       // One-time prompt upgrade: the legacy instruction told the model to
       // answer the canned «…اهمیت مشخصی ندارد» line — rewrite it in place

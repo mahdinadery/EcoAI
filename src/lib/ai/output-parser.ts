@@ -28,6 +28,20 @@ export type ParsedAiOutput = {
   reason: string;
 };
 
+/** Cleans structured or prose Persian summary while preserving `\n` line breaks. */
+export function normalizeSummaryText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/\r\n/g, "\n")
+    // Strip markdown bold asterisks (`**...**`) that would render as literal `\*\*` after `escapeMd`
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Cleans an AI-translated Persian headline (strips wrapping quotes and linebreaks). */
 export function normalizeTranslatedTitle(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -197,7 +211,7 @@ export function validateAiOutputAgainstSchema(
     value: {
       translatedTitle: normalizeTranslatedTitle(parsed.translatedTitle),
       hashtags: normalizeHashtags(parsed.hashtags),
-      summary: typeof parsed.summary === "string" ? parsed.summary.trim() : "",
+      summary: normalizeSummaryText(parsed.summary),
       category: typeof parsed.category === "string" && parsed.category.trim() ? parsed.category.trim() : "سایر",
       importance: clampScore(parsed.importance),
       relevance: clampScore(parsed.relevance),

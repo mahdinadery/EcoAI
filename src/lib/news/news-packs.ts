@@ -1,23 +1,18 @@
 /**
- * Ready-made news packs (pure data + pure helpers — safe on client and server).
+ * Curated domain news packs — pure data + pure merge helpers (no DB, no network).
  *
- * A pack bundles the two things an operator needs to start monitoring a domain:
+ * A pack bundles the three things an operator otherwise has to stitch together
+ * by hand across two admin pages:
+ *   1. Focused topic definitions (labels + English/Persian keywords) for the pre-AI topic gate
+ *   2. Curated RSS/Atom feeds with sensible priorities and fetch intervals
+ *   3. An optional audience note that can be appended to the AI system prompt
  *
- *   1. topics — keyword groups understood by the pre-AI topic filter
- *      (src/lib/news/topic-filter.ts) and injected into the AI prompt;
- *   2. sources — curated RSS/Atom feeds that the apply action probes before adding.
- *
- * Packs are deliberately additive and idempotent: applying the same pack twice
- * never duplicates a topic or a source. Nothing here touches the database.
+ * Applying a pack is strictly ADDITIVE and idempotent: existing topics and
+ * sources are never overwritten or deleted, and re-applying the same pack is a
+ * no-op on items that already exist.
  */
 
-export type NewsPackTopic = {
-  /** Stable id inside the pack (prefixed on merge to avoid collisions). */
-  id: string;
-  label: string;
-  enabled: boolean;
-  keywords: string[];
-};
+import type { AiTopicRule } from "../ai/config-types";
 
 export type NewsPackSource = {
   name: string;
@@ -30,35 +25,37 @@ export type NewsPackSource = {
   maxItemsPerFetch: number;
 };
 
+export type PackSourceSeed = NewsPackSource;
+
 export type NewsPack = {
   id: string;
   title: string;
   description: string;
-  /** Appended to the active system prompt once (see appendAudienceNote). */
-  audienceNote?: string;
-  /** Substring used to detect that audienceNote is already applied. */
+  /** Short marker used to avoid appending `audienceNote` twice. */
   audienceMarker?: string;
-  /** Merged additively into the config deny-list when topics are applied. */
+  /** Optional Persian guidance appended once to the active system prompt. */
+  audienceNote?: string;
+  topics: AiTopicRule[];
+  /** Off-topic keywords merged into the always-on deny-list when topics apply. */
   blockedKeywords?: string[];
-  topics: NewsPackTopic[];
   sources: NewsPackSource[];
 };
 
+const TOPIC_LIMIT = 30;
+
 /**
- * Primary pack: English Analytical Economic Articles & Global Research.
- *
- * Focused on deep analytical columns, policy papers, central bank research notes,
- * and institutional commentary (Project Syndicate, VoxEU/CEPR, IMF Blog,
- * Brookings, PIIE, The Economist, Federal Reserve, NY Fed, Bruegel, World Bank).
+ * Primary pack: **The Economics of AI (`اقتصاد هوش مصنوعی`)** — authoritative
+ * English research & analytical feeds at the intersection of Artificial
+ * Intelligence and Economics, curated for Persian translation & Bale publishing.
  */
-export const ENGLISH_ECONOMICS_PACK: NewsPack = {
-  id: "english-economics",
-  title: "مقالات و تحلیل‌های اقتصادی انگلیسی (جهانی)",
+export const AI_ECONOMICS_PACK: NewsPack = {
+  id: "ai-economics",
+  title: "بسته تخصصی اقتصاد هوش مصنوعی (The Economics of AI)",
   description:
-    "هشت محور تخصصی اقتصاد کلان، سیاست پولی، تجارت جهانی، بازارهای مالی، اقتصاد توسعه و فناوری به‌همراه ده منبع معتبر مقالات تحلیلی و پژوهشی انگلیسی. هر منبع پیش از افزودن تست می‌شود و موضوعات به‌صورت «تمرکز» روی پیکربندی فعال اعمال می‌شوند.",
+    "موضوعات کلیدی و منابع تراز اول انگلیسی در حوزهٔ اقتصاد هوش مصنوعی (بهره‌وری و رشد اقتصادی، بازار کار و اتوماسیون، اقتصاد محاسبات/تراشه/انرژی، سرمایه‌گذاری و مدل‌های کسب‌وکار AI، رقابت و انحصار، و سیاست‌گذاری و ژئواکونومیک هوش مصنوعی) از NBER، Brookings، MIT Tech Review، Project Syndicate، VoxEU، IMF، OpenAI و غیره برای ترجمه و انتشار در کانال بله.",
+  audienceMarker: "حوزهٔ تخصصی این کانال در پیام‌رسان بله، «اقتصاد هوش مصنوعی»",
   audienceNote:
-    "مخاطب هدف این سامانه اقتصاددانان، پژوهشگران اقتصادی، سیاست‌گذاران و تحلیلگران بازارهای مالی هستند؛ مقالات و یادداشت‌های تحلیلی انگلیسی را با دقت علمی مطالعه کن، عنوان را به فارسی دقیق ترجمه کن، خلاصهٔ تحلیلی جامع و روان فارسی بنویس و اهمیت، مرتبط بودن و توصیه ارسال هر مقاله را بر پایهٔ عمق استدلال اقتصادی، شواهد تجربی و اثر سیاستی یا بازاری بسنج.",
-  audienceMarker: "مخاطب هدف این سامانه اقتصاددانان، پژوهشگران اقتصادی، سیاست‌گذاران",
+    "حوزهٔ تخصصی این کانال در پیام‌رسان بله، «اقتصاد هوش مصنوعی» (The Economics of AI) است و مخاطب هدف آن اقتصاددانان، پژوهشگران اقتصاد فناوری، سرمایه‌گذاران و سیاست‌گذاران هستند: مقالاتی در اولویت بالایند که پیوند میان هوش مصنوعی و اقتصاد را کاوش می‌کنند (بهره‌وری کل عوامل و رشد اقتصادی، اتوماسیون و بازار کار، زنجیرهٔ تأمین تراشه/GPU، هزینهٔ محاسبات و انرژی دیتاسنترها، مخارج سرمایه‌ای هایپراسکیلرها و بازده سرمایه، ساختار بازار و ضدانحصار، اقتصاد داده و کپی‌رایت، و مقررات‌گذاری و ژئواکونومیک AI). مطالب کاملاً غیراقتصادی (آموزش برنامه‌نویسی محض، ترفندهای روزمرهٔ کاربری بدون بعد اقتصادی) و نیز اخبار عمومی غیرمرتبط با هوش مصنوعی/فناوری دیجیتال باید امتیاز مرتبط بودن پایین بگیرند.",
   blockedKeywords: [
     "nfl",
     "nba",
@@ -66,431 +63,442 @@ export const ENGLISH_ECONOMICS_PACK: NewsPack = {
     "nhl",
     "premier league",
     "champions league",
+    "world cup",
+    "touchdown",
     "celebrity gossip",
-    "hollywood",
+    "red carpet",
+    "kardashian",
     "horoscope",
+    "astrology",
     "movie review",
-    "fashion week",
+    "box office",
+    "recipe",
+    "video game walkthrough",
     "ورزش",
     "فوتبال",
+    "لیگ برتر",
+    "جام جهانی",
     "سرگرمی",
+    "سلبریتی",
     "سینما",
+    "طالع‌بینی",
     "حوادث",
     "تصادف",
+    "قتل",
   ],
   topics: [
     {
-      id: "monetary-policy",
-      label: "سیاست پولی، تورم و بانک‌های مرکزی",
+      id: "pack-aiecon-productivity-growth",
+      label: "بهره‌وری، رشد اقتصادی و کلان اقتصاد هوش مصنوعی",
       enabled: true,
       keywords: [
-        "monetary policy",
-        "central bank",
-        "federal reserve",
-        "fed",
-        "ecb",
-        "bank of england",
-        "bank of japan",
-        "interest rate",
-        "inflation",
-        "disinflation",
-        "deflation",
-        "quantitative easing",
-        "quantitative tightening",
-        "yield curve",
-        "price stability",
-      ],
-    },
-    {
-      id: "macro-fiscal",
-      label: "اقتصاد کلان، رشد و سیاست مالی",
-      enabled: true,
-      keywords: [
-        "macroeconomics",
-        "macroeconomic",
-        "economic growth",
-        "gdp",
-        "recession",
-        "stagflation",
-        "fiscal policy",
-        "public debt",
-        "sovereign debt",
-        "budget deficit",
-        "debt sustainability",
-        "business cycle",
-        "aggregate demand",
-      ],
-    },
-    {
-      id: "trade-geoeconomics",
-      label: "تجارت جهانی، تعرفه‌ها و ژئواکونومیک",
-      enabled: true,
-      keywords: [
-        "international trade",
-        "global trade",
-        "tariff",
-        "tariffs",
-        "protectionism",
-        "supply chain",
-        "geoeconomics",
-        "sanctions",
-        "industrial policy",
-        "wto",
-        "globalization",
-        "deglobalization",
-        "export controls",
-        "current account",
-      ],
-    },
-    {
-      id: "finance-markets",
-      label: "بازارهای مالی، بانکداری و ثبات مالی",
-      enabled: true,
-      keywords: [
-        "financial stability",
-        "financial markets",
-        "capital markets",
-        "bond market",
-        "treasury yields",
-        "banking crisis",
-        "banking sector",
-        "systemic risk",
-        "credit crunch",
-        "liquidity",
-        "private credit",
-        "prudential regulation",
-      ],
-    },
-    {
-      id: "development-institutions",
-      label: "اقتصاد توسعه، بازارهای نوظهور و نهادهای بین‌المللی",
-      enabled: true,
-      keywords: [
-        "emerging markets",
-        "developing economies",
-        "global south",
-        "imf",
-        "world bank",
-        "oecd",
-        "capital flows",
-        "exchange rate",
-        "currency crisis",
-        "balance of payments",
-        "foreign direct investment",
-        "economic development",
-      ],
-    },
-    {
-      id: "energy-climate",
-      label: "انرژی، کالاهای اساسی و اقتصاد گذار اقلیمی",
-      enabled: true,
-      keywords: [
-        "energy transition",
-        "oil market",
-        "crude oil",
-        "natural gas",
-        "opec",
-        "commodities",
-        "commodity prices",
-        "carbon tax",
-        "carbon pricing",
-        "green transition",
-        "climate finance",
-        "critical minerals",
-      ],
-    },
-    {
-      id: "tech-labor-productivity",
-      label: "بهره‌وری، هوش مصنوعی و اقتصاد بازار کار",
-      enabled: true,
-      keywords: [
-        "productivity",
-        "labor market",
-        "labour market",
-        "employment",
-        "unemployment",
-        "wage growth",
         "artificial intelligence",
+        "generative ai",
+        "economics of ai",
+        "ai productivity",
+        "total factor productivity",
+        "solow paradox",
+        "macroeconomics of ai",
+        "ai adoption",
+        "economic growth",
         "automation",
-        "digital economy",
-        "cbdc",
-        "fintech",
-        "human capital",
+        "اقتصاد هوش مصنوعی",
+        "بهره‌وری هوش مصنوعی",
       ],
     },
     {
-      id: "inequality-political-economy",
-      label: "نابرابری، تغییرات جمعیتی و اقتصاد سیاسی",
+      id: "pack-aiecon-labor-workforce",
+      label: "بازار کار، مشاغل، دستمزد و سرمایه انسانی",
       enabled: true,
       keywords: [
-        "inequality",
-        "income distribution",
-        "demographics",
-        "aging population",
-        "political economy",
-        "tax policy",
-        "taxation",
-        "housing market",
-        "welfare state",
-        "economic policy",
-        "structural reform",
+        "future of work",
+        "labor market",
+        "job displacement",
+        "task automation",
+        "augmentation",
+        "skill-biased",
+        "wage inequality",
+        "white-collar",
+        "ai and jobs",
+        "workforce",
+        "human capital",
+        "اتوماسیون مشاغل",
+        "بازار کار و هوش مصنوعی",
+      ],
+    },
+    {
+      id: "pack-aiecon-compute-chips-energy",
+      label: "اقتصاد محاسبات، تراشه، دیتاسنتر و انرژی",
+      enabled: true,
+      keywords: [
+        "semiconductor",
+        "gpu",
+        "nvidia",
+        "tsmc",
+        "asml",
+        "data center",
+        "compute cost",
+        "inference cost",
+        "training cost",
+        "hyperscaler",
+        "capex",
+        "ai infrastructure",
+        "electricity demand",
+        "power grid",
+        "تراشه",
+        "دیتاسنتر",
+      ],
+    },
+    {
+      id: "pack-aiecon-investment-business",
+      label: "سرمایه‌گذاری، ارزش‌گذاری، مدل کسب‌وکار و ROI هوش مصنوعی",
+      enabled: true,
+      keywords: [
+        "ai investment",
+        "ai valuation",
+        "ai bubble",
+        "venture capital",
+        "enterprise ai",
+        "ai monetization",
+        "api pricing",
+        "unit economics",
+        "return on investment",
+        "open source ai",
+        "foundation model",
+        "سرمایه‌گذاری هوش مصنوعی",
+        "مدل کسب‌وکار هوش مصنوعی",
+      ],
+    },
+    {
+      id: "pack-aiecon-competition-data",
+      label: "ساختار بازار، رقابت، انحصار، داده و کپی‌رایت",
+      enabled: true,
+      keywords: [
+        "ai antitrust",
+        "market power",
+        "big tech",
+        "competition policy",
+        "monopoly",
+        "network effects",
+        "data economics",
+        "training data",
+        "copyright",
+        "intellectual property",
+        "ضدانحصار",
+        "اقتصاد داده",
+      ],
+    },
+    {
+      id: "pack-aiecon-geoeconomics-trade",
+      label: "ژئواکونومیک هوش مصنوعی، کنترل صادرات و سیاست صنعتی",
+      enabled: true,
+      keywords: [
+        "chip export controls",
+        "export controls",
+        "chips act",
+        "sovereign ai",
+        "industrial policy",
+        "ai race",
+        "technological competition",
+        "ai supply chain",
+        "ژئواکونومیک هوش مصنوعی",
+        "حاکمیت هوش مصنوعی",
+      ],
+    },
+    {
+      id: "pack-aiecon-regulation-policy",
+      label: "مقررات‌گذاری، مالیات ربات و سیاست‌گذاری عمومی AI",
+      enabled: true,
+      keywords: [
+        "ai regulation",
+        "ai act",
+        "ai governance",
+        "ai policy",
+        "robot tax",
+        "universal basic income",
+        "ai safety",
+        "public sector ai",
+        "مقررات هوش مصنوعی",
+        "سیاست‌گذاری هوش مصنوعی",
+      ],
+    },
+    {
+      id: "pack-aiecon-finance-sectors",
+      label: "کاربرد اقتصادی AI در مالی، بانکداری، سلامت و صنایع",
+      enabled: true,
+      keywords: [
+        "ai in finance",
+        "central bank ai",
+        "financial stability",
+        "fintech",
+        "algorithmic trading",
+        "drug discovery",
+        "ai in healthcare",
+        "industrial ai",
+        "هوش مصنوعی در مالی",
+        "تحول دیجیتال",
       ],
     },
   ],
   sources: [
     {
+      name: "MIT Technology Review — Artificial Intelligence",
+      url: "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+      type: "rss",
+      category: "اقتصاد و فناوری هوش مصنوعی",
+      description: "گزارش‌های عمیق دربارهٔ هزینهٔ محاسبات، پذیرش سازمانی، سیاست‌گذاری و اقتصاد هوش مصنوعی",
+      priority: 1,
+      fetchIntervalMinutes: 60,
+      maxItemsPerFetch: 25,
+    },
+    {
+      name: "Brookings — Artificial Intelligence",
+      url: "https://www.brookings.edu/topic/artificial-intelligence/feed/",
+      type: "rss",
+      category: "پژوهش سیاست‌گذاری و اقتصاد AI",
+      description: "پژوهش‌های اندیشکده بروکینگز دربارهٔ اثر هوش مصنوعی بر بازار کار، بهره‌وری، رقابت و مقررات",
+      priority: 1,
+      fetchIntervalMinutes: 90,
+      maxItemsPerFetch: 25,
+    },
+    {
+      name: "NBER — New Working Papers",
+      url: "https://back.nber.org/rss/new.xml",
+      type: "rss",
+      category: "مقالات پژوهشی اقتصاد (NBER)",
+      description: "جدیدترین مقالات کاری اقتصاددانان برجسته (از جمله پژوهش‌های اقتصاد هوش مصنوعی، اتوماسیون و رشد)",
+      priority: 1,
+      fetchIntervalMinutes: 180,
+      maxItemsPerFetch: 40,
+    },
+    {
       name: "Project Syndicate — Economics",
       url: "https://www.project-syndicate.org/rss/section/economics",
       type: "rss",
-      category: "مقالات تحلیلی اقتصاد",
-      description:
-        "یادداشت‌ها و مقالات تحلیلی اقتصاددانان برجسته جهان و برندگان نوبل اقتصاد در Project Syndicate.",
+      category: "دیدگاه اقتصاددانان برجسته",
+      description: "یادداشت‌های دارون عجم‌اوغلو، اریک برینجولفسون، مایکل اسپنس و برندگان نوبل دربارهٔ اقتصاد AI",
       priority: 1,
-      fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 40,
+      fetchIntervalMinutes: 90,
+      maxItemsPerFetch: 25,
     },
     {
-      name: "VoxEU / CEPR — Economic Policy Research",
+      name: "VoxEU / CEPR — Economic Research",
       url: "https://cepr.org/rss/voxeu",
       type: "rss",
-      category: "پژوهش اقتصادی",
-      description:
-        "پرتال تحلیلی مرکز پژوهش‌های سیاست اقتصادی اروپا (CEPR) — مقالات مبتنی بر پژوهش‌های روز اقتصاددانان.",
+      category: "پژوهش تجربی اقتصاد",
+      description: "مقالات تحلیلی اقتصاددانان دربارهٔ بهره‌وری، هوش مصنوعی، بازار کار و نوآوری",
       priority: 1,
-      fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 40,
+      fetchIntervalMinutes: 90,
+      maxItemsPerFetch: 30,
     },
     {
-      name: "IMF Blog — صندوق بین‌المللی پول",
+      name: "IMF Blog — International Monetary Fund",
       url: "https://www.imf.org/en/Blogs/rss",
       type: "rss",
       category: "نهادهای بین‌المللی",
-      description:
-        "وبلاگ رسمی صندوق بین‌المللی پول (IMF) — تحلیل‌های اقتصاد کلان جهانی، ثبات مالی و سیاست‌گذاری.",
-      priority: 1,
-      fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 35,
+      description: "تحلیل‌های صندوق بین‌المللی پول دربارهٔ هوش مصنوعی، بهره‌وری جهانی، بازار کار و سیاست مالی",
+      priority: 2,
+      fetchIntervalMinutes: 120,
+      maxItemsPerFetch: 25,
     },
     {
-      name: "Brookings Institution — Economy",
-      url: "https://www.brookings.edu/topic/economy/feed/",
+      name: "Ars Technica — AI",
+      url: "https://feeds.arstechnica.com/arstechnica/ai",
       type: "rss",
-      category: "اندیشکده اقتصادی",
-      description:
-        "مقالات و گزارش‌های تحلیلی اندیشکده بروکینگز درباره سیاست پولی، مالی، بازار کار و اقتصاد جهانی.",
+      category: "صنعت، زیرساخت و بازار AI",
+      description: "گزارش‌های تحلیلی دربارهٔ آزمایشگاه‌های AI، اقتصاد GPU و دیتاسنتر، انرژی، کپی‌رایت و ضدانحصار",
       priority: 2,
       fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 40,
+      maxItemsPerFetch: 25,
     },
     {
-      name: "Peterson Institute (PIIE)",
+      name: "The Verge — AI",
+      url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+      type: "rss",
+      category: "کسب‌وکار و رقابت در AI",
+      description: "پوشش سرمایه‌گذاری غول‌های فناوری، مدل‌های درآمدی، قراردادها و رقابت در صنعت هوش مصنوعی",
+      priority: 2,
+      fetchIntervalMinutes: 60,
+      maxItemsPerFetch: 25,
+    },
+    {
+      name: "OpenAI News",
+      url: "https://openai.com/news/rss.xml",
+      type: "rss",
+      category: "گزارش‌های آزمایشگاه‌های پیشرو AI",
+      description: "گزارش‌های اقتصادی، پذیرش سازمانی، قیمت‌گذاری API و معرفی مدل‌های جدید OpenAI",
+      priority: 2,
+      fetchIntervalMinutes: 120,
+      maxItemsPerFetch: 20,
+    },
+    {
+      name: "Google Blog — AI",
+      url: "https://blog.google/technology/ai/rss/",
+      type: "rss",
+      category: "زیرساخت و اکوسیستم AI",
+      description: "گزارش‌های گوگل و دیپ‌مایند دربارهٔ زیرساخت ابری، TPU، مدل‌های هوش مصنوعی و کاربردهای صنعتی",
+      priority: 3,
+      fetchIntervalMinutes: 120,
+      maxItemsPerFetch: 20,
+    },
+    {
+      name: "Peterson Institute for International Economics (PIIE)",
       url: "https://www.piie.com/rss.xml",
       type: "rss",
-      category: "تجارت و اقتصاد بین‌الملل",
-      description:
-        "مؤسسه پترسون برای اقتصاد بین‌الملل — تحلیل‌های عمیق تجارت جهانی، تعرفه‌ها، ارز و اقتصاد کلان.",
-      priority: 1,
-      fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 40,
-    },
-    {
-      name: "The Economist — Finance & Economics",
-      url: "https://www.economist.com/finance-and-economics/rss.xml",
-      type: "rss",
-      category: "تحلیل مالی و اقتصادی",
-      description:
-        "بخش مالی و اقتصاد نشریه اکونومیست — گزارش‌ها و تحلیل‌های روندهای کلیدی اقتصاد جهان.",
-      priority: 2,
-      fetchIntervalMinutes: 60,
-      maxItemsPerFetch: 40,
-    },
-    {
-      name: "Federal Reserve — FEDS Notes",
-      url: "https://www.federalreserve.gov/feeds/feds_notes.xml",
-      type: "rss",
-      category: "بانک مرکزی و سیاست پولی",
-      description:
-        "یادداشت‌های تحلیلی و پژوهشی اقتصاددانان فدرال رزرو آمریکا درباره سیاست پولی، تورم و ثبات مالی.",
+      category: "ژئواکونومیک و تجارت فناوری",
+      description: "پژوهش‌های کنترل صادرات تراشه، سیاست صنعتی، رقابت فناوری آمریکا و چین و تجارت دیجیتال",
       priority: 2,
       fetchIntervalMinutes: 120,
-      maxItemsPerFetch: 30,
-    },
-    {
-      name: "Liberty Street Economics — NY Fed",
-      url: "https://libertystreeteconomics.newyorkfed.org/feed/",
-      type: "rss",
-      category: "پژوهش بانک مرکزی",
-      description:
-        "وبلاگ پژوهشی فدرال رزرو نیویورک — مقالات تحلیلی بازارهای مالی، تورم، اعتبارات و تجارت.",
-      priority: 2,
-      fetchIntervalMinutes: 120,
-      maxItemsPerFetch: 30,
+      maxItemsPerFetch: 25,
     },
     {
       name: "Bruegel — European Economic Think Tank",
       url: "https://www.bruegel.org/rss.xml",
       type: "rss",
-      category: "اندیشکده اقتصادی",
-      description:
-        "اندیشکده اقتصادی بروگل (بروکسل) — مقالات سیاست‌گذاری اقتصادی، انرژی، رقابت و ژئواکونومیک.",
-      priority: 2,
-      fetchIntervalMinutes: 90,
-      maxItemsPerFetch: 35,
-    },
-    {
-      name: "World Bank Blogs — بانک جهانی",
-      url: "https://blogs.worldbank.org/en/rss.xml",
-      type: "rss",
-      category: "اقتصاد توسعه",
-      description:
-        "تحلیل‌ها و یافته‌های پژوهشی کارشناسان بانک جهانی درباره اقتصاد توسعه، تجارت و بازارهای نوظهور.",
+      category: "رقابت دیجیتال و مقررات AI",
+      description: "تحلیل‌های اقتصاد دیجیتال، قانون هوش مصنوعی اتحادیه اروپا (AI Act)، ضدانحصار و سیاست صنعتی",
       priority: 3,
-      fetchIntervalMinutes: 90,
-      maxItemsPerFetch: 40,
+      fetchIntervalMinutes: 120,
+      maxItemsPerFetch: 25,
     },
   ],
 };
 
-export const DEFAULT_NEWS_PACK: NewsPack = ENGLISH_ECONOMICS_PACK;
+/** Backward-compatible aliases pointing to the Economics of AI pack. */
+export const ENGLISH_ECONOMICS_PACK: NewsPack = AI_ECONOMICS_PACK;
+export const DEFAULT_NEWS_PACK = AI_ECONOMICS_PACK;
 
-export const NEWS_PACKS: NewsPack[] = [ENGLISH_ECONOMICS_PACK];
+export const NEWS_PACKS: readonly NewsPack[] = [AI_ECONOMICS_PACK];
 
 export function getNewsPack(id: string): NewsPack | undefined {
+  if (id === "english-economics") return AI_ECONOMICS_PACK;
   return NEWS_PACKS.find((pack) => pack.id === id);
 }
 
-/** Persian/Latin-friendly label comparison (case, ZWNJ, Arabic letters, whitespace). */
+/** Canonical comparison key for topic labels (case + Persian letter variants). */
 export function normalizeTopicLabel(label: string): string {
   return label
-    .toLowerCase()
-    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, "")
-    .replace(/[يى]/g, "ی")
-    .replace(/ك/g, "ک")
-    .replace(/[أإآ]/g, "ا")
+    .replace(/\u064A/g, "\u06CC")
+    .replace(/\u0643/g, "\u06A9")
+    .replace(/[\u200C\u200F\u200E]/g, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .toLowerCase();
 }
 
-/** Compares source URLs ignoring case, a trailing slash and the hash. */
-export function normalizeSourceUrl(url: string): string {
-  const trimmed = url.trim().toLowerCase();
+/** Canonical comparison key for feed URLs (ignores trailing slash & fragment). */
+export function normalizeSourceUrl(raw: string): string {
+  const trimmed = raw.trim();
   try {
     const parsed = new URL(trimmed);
-    const path = parsed.pathname.replace(/\/+$/, "");
-    return `${parsed.origin}${path}${parsed.search}`;
+    parsed.hash = "";
+    const pathname = parsed.pathname.replace(/\/+$/, "") || "/";
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${pathname}${parsed.search}`;
   } catch {
-    return trimmed.replace(/\/+$/, "");
+    return trimmed.replace(/\/+$/, "").toLowerCase();
   }
 }
 
 export type TopicMergeResult = {
-  topics: NewsPackTopic[];
-  /** Labels that were actually appended. */
+  topics: AiTopicRule[];
   added: string[];
-  /** Labels already present (same normalized label). */
   skipped: string[];
-  /** Pack topics dropped because the 30-topic configuration limit was reached. */
   truncated: number;
 };
 
 /**
- * Adds the pack's topics to an existing list without mutating the input.
- * Existing labels win; the 30-topic limit enforced by the AI config validator
- * is respected here so the result is always saveable.
+ * Merges a pack's topics into an existing list without duplicating labels or
+ * ids, respecting the 30-topic validation limit of `ai-config/config-service`.
  */
-export function mergePackTopics(
-  existing: readonly NewsPackTopic[],
-  pack: NewsPack,
-  options: { maxTopics?: number } = {},
-): TopicMergeResult {
-  const maxTopics = options.maxTopics ?? 30;
-  const topics = existing.map((topic) => ({ ...topic, keywords: [...topic.keywords] }));
-  const seenLabels = new Set(topics.map((topic) => normalizeTopicLabel(topic.label)));
-  const usedIds = new Set(topics.map((topic) => topic.id));
+export function mergePackTopics(existing: readonly AiTopicRule[], pack: NewsPack): TopicMergeResult {
+  const result: AiTopicRule[] = existing.map((topic) => ({
+    ...topic,
+    keywords: [...topic.keywords],
+  }));
+  const seenLabels = new Set(result.map((topic) => normalizeTopicLabel(topic.label)));
+  const seenIds = new Set(result.map((topic) => topic.id));
 
   const added: string[] = [];
   const skipped: string[] = [];
   let truncated = 0;
 
-  for (const topic of pack.topics) {
-    const labelKey = normalizeTopicLabel(topic.label);
-    if (seenLabels.has(labelKey)) {
-      skipped.push(topic.label);
+  for (const seed of pack.topics) {
+    const key = normalizeTopicLabel(seed.label);
+    if (seenLabels.has(key)) {
+      skipped.push(seed.label);
       continue;
     }
-    if (topics.length >= maxTopics) {
+    if (result.length >= TOPIC_LIMIT) {
       truncated += 1;
       continue;
     }
 
-    const baseId = `pack-${pack.id}-${topic.id}`;
-    let id = baseId;
+    let id = seed.id;
     let suffix = 2;
-    while (usedIds.has(id)) {
-      id = `${baseId}-${suffix}`;
-      suffix += 1;
+    while (seenIds.has(id)) {
+      id = `${seed.id}-${suffix++}`;
     }
 
-    topics.push({ id, label: topic.label, enabled: true, keywords: [...topic.keywords] });
-    usedIds.add(id);
-    seenLabels.add(labelKey);
-    added.push(topic.label);
+    result.push({
+      id,
+      label: seed.label,
+      enabled: true,
+      keywords: [...seed.keywords],
+    });
+    seenLabels.add(key);
+    seenIds.add(id);
+    added.push(seed.label);
   }
 
-  return { topics, added, skipped, truncated };
+  return { topics: result, added, skipped, truncated };
 }
 
 /**
- * Appends the pack's audience note to the system prompt exactly once.
- * Returns `alreadyPresent: true` when the marker already exists.
+ * Merges a pack's deny-list keywords into an existing `blockedKeywords` array
+ * (additive, case/Persian-normalized dedupe, respects the 100-item cap).
+ */
+export function mergeBlockedKeywords(
+  existing: readonly string[] | undefined,
+  pack: NewsPack,
+  limit = 100,
+): { blockedKeywords: string[]; added: string[]; skipped: string[] } {
+  const result = [...(existing ?? [])];
+  const seen = new Set(result.map(normalizeTopicLabel));
+  const added: string[] = [];
+  const skipped: string[] = [];
+
+  for (const kw of pack.blockedKeywords ?? []) {
+    const key = normalizeTopicLabel(kw);
+    if (!key) continue;
+    if (seen.has(key)) {
+      skipped.push(kw);
+      continue;
+    }
+    if (result.length >= limit) break;
+    result.push(kw);
+    seen.add(key);
+    added.push(kw);
+  }
+
+  return { blockedKeywords: result, added, skipped };
+}
+
+/**
+ * Appends the pack's audience note to `systemPrompt` once. If the marker (or
+ * the exact note) is already present, returns the prompt untouched.
  */
 export function appendAudienceNote(
   systemPrompt: string,
   pack: NewsPack,
 ): { prompt: string; alreadyPresent: boolean } {
   if (!pack.audienceNote) return { prompt: systemPrompt, alreadyPresent: true };
-  if (pack.audienceMarker && systemPrompt.includes(pack.audienceMarker)) {
+  const marker = pack.audienceMarker ?? pack.audienceNote;
+  if (systemPrompt.includes(marker)) {
     return { prompt: systemPrompt, alreadyPresent: true };
   }
+  const base = systemPrompt.trimEnd();
   return {
-    prompt: `${systemPrompt.trimEnd()}\n\n${pack.audienceNote}`.trim(),
+    prompt: `${base}\n\n${pack.audienceNote}`,
     alreadyPresent: false,
   };
-}
-
-export type BlockedKeywordsMergeResult = {
-  blockedKeywords: string[];
-  /** Keywords that were actually appended. */
-  added: string[];
-  /** Keywords already present (same normalized form). */
-  skipped: string[];
-};
-
-/**
- * Adds the pack's deny-list keywords to the configuration's `blockedKeywords`
- * without mutating the input. Comparison ignores case, ZWNJ and letter variants.
- */
-export function mergeBlockedKeywords(
-  existing: readonly string[],
-  pack: NewsPack,
-): BlockedKeywordsMergeResult {
-  const blockedKeywords = existing.map((keyword) => keyword.trim()).filter(Boolean);
-  const seen = new Set(blockedKeywords.map(normalizeTopicLabel));
-  const added: string[] = [];
-  const skipped: string[] = [];
-
-  for (const raw of pack.blockedKeywords ?? []) {
-    const keyword = raw.trim();
-    if (!keyword) continue;
-    const key = normalizeTopicLabel(keyword);
-    if (seen.has(key)) {
-      skipped.push(keyword);
-      continue;
-    }
-    seen.add(key);
-    blockedKeywords.push(keyword);
-    added.push(keyword);
-  }
-
-  return { blockedKeywords, added, skipped };
 }

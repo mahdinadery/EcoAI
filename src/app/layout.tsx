@@ -11,8 +11,8 @@ const vazirmatn = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "EcoAI — دستیار هوشمند مقالات و اخبار اقتصادی",
-  description: "دریافت مقالات اقتصادی انگلیسی، خلاصه‌سازی، ترجمه تخصصی به فارسی و ارسال به پیام‌رسان بله.",
+  title: "EcoAI — دستیار هوشمند اقتصاد هوش مصنوعی (The Economics of AI)",
+  description: "دریافت مقالات انگلیسی حوزهٔ اقتصاد هوش مصنوعی، تحلیل و ترجمه تخصصی به فارسی و انتشار در پیام‌رسان بله.",
 };
 
 export const viewport: Viewport = {

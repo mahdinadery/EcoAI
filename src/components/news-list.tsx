@@ -112,6 +112,7 @@ function ArticleCard({
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeDetail, setAnalyzeDetail] = useState<string | null>(null);
   const [autoNote, setAutoNote] = useState<string | null>(null);
   const [sendResults, setSendResults] = useState<SendOutcome[] | null>(null);
   const router = useRouter();
@@ -122,12 +123,14 @@ function ArticleCard({
     if (analyzing) return;
     setAnalyzing(true);
     setAnalyzeError(null);
+    setAnalyzeDetail(null);
 
     try {
       const res = await fetch(`/api/news/${item.id}/analyze`, { method: "POST" });
       const data = (await res.json()) as {
         success: boolean;
         message?: string;
+        detail?: string | null;
         newsItem?: AnalysisPatch;
         autoSend?: AutoSendSummary;
       };
@@ -167,6 +170,7 @@ function ArticleCard({
         }
       } else {
         setAnalyzeError(data.message || "تحلیل هوشمند با شکست مواجه شد.");
+        setAnalyzeDetail(data.detail ? data.detail.slice(0, 260) : null);
       }
     } catch {
       setAnalyzeError("خطا در ارتباط با سرور زمان اجرای تحلیل هوشمند.");
@@ -305,7 +309,12 @@ function ArticleCard({
       {analyzeError ? (
         <div className="mt-4 rounded-xl border border-danger-line bg-danger-soft p-3 text-xs text-danger-ink">
           <p className="font-semibold">{analyzeError}</p>
-          <p className="mt-1 text-muted">برای آزمایش مجدد روی دکمه تحلیل کلیک کنید.</p>
+          {analyzeDetail ? (
+            <p className="mt-1.5 break-words rounded bg-surface/60 px-2 py-1 font-mono text-[11px] opacity-90" dir="ltr">
+              {analyzeDetail}
+            </p>
+          ) : null}
+          <p className="mt-1.5 text-muted">برای آزمایش مجدد روی دکمه تحلیل کلیک کنید.</p>
         </div>
       ) : null}
 

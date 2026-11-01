@@ -8,18 +8,18 @@ export function BulletinConfigPanel({ value, onChange }: Props) {
   const update = (patch: Partial<BulletinSettings>) => onChange({ ...settings, ...patch });
   const preview = buildBulletinMessage({
     settings, generatedAt: new Date("2026-01-01T12:00:00Z"), timezone: "Asia/Tehran",
-    intro: "این یک مقدمهٔ نمونه برای پیش‌نمایش بولتن تحلیلی اقتصادی است؛ هیچ درخواست AI اجرا نشده است.",
+    intro: "این یک مقدمهٔ نمونه برای پیش‌نمایش بولتن «اقتصاد هوش مصنوعی» است؛ هیچ درخواست AI اجرا نشده است.",
     items: Array.from({length: 5}, (_, i) => ({
       id: String(i),
-      title: `Why Global Neutral Interest Rates Remain Elevated (${i + 1})`,
-      translatedTitle: `چرا نرخ بهرهٔ خنثی در اقتصاد جهانی بالا مانده است (${i + 1})`,
-      oneLiner: "خلاصهٔ تحلیلی نمونه از استدلال اقتصادی و پیامدهای سیاست پولی و مالی.",
-      whyItMatters: "افزایش نرخ بهرهٔ خنثی هزینهٔ تأمین مالی دولت‌ها و شرکت‌ها را در میان‌مدت تغییر می‌دهد.",
+      title: `The Macroeconomics of AI and Total Factor Productivity (${i + 1})`,
+      translatedTitle: `اقتصاد کلان هوش مصنوعی و رشد بهره‌وری کل عوامل (${i + 1})`,
+      oneLiner: "خلاصهٔ تحلیلی نمونه دربارهٔ اثر پذیرش هوش مصنوعی بر بهره‌وری، بازار کار و سرمایه‌گذاری زیرساختی.",
+      whyItMatters: "کاهش هزینهٔ استنتاج مدل‌ها سرعت انتشار بهره‌وری هوش مصنوعی در بنگاه‌ها را تعیین می‌کند.",
       url: "https://example.com/sample",
-      importanceScore: 85,
-      hashtags: "#اقتصاد_کلان #سیاست_پولی",
+      importanceScore: 88,
+      hashtags: "#اقتصاد_هوش_مصنوعی #بهره‌وری #بازار_کار",
       publishedAt: null,
-      entityTags: ["صندوق بین‌المللی پول", "فدرال رزرو"],
+      entityTags: ["دفتر ملی پژوهش‌های اقتصادی آمریکا", "انویدیا"],
       corroborated: true,
     })),
   });

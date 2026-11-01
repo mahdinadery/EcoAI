@@ -24,6 +24,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
   DEFAULT_TOPIC_FILTER,
+  upgradeLegacySystemPrompt,
   upgradeLegacyTemplateFooter,
   upgradeLegacyWhyItMattersInstruction,
   type ActiveAiConfig,
@@ -68,16 +69,21 @@ function withMissingConfigParts(
 
 function toActiveConfig(row: AiConfigurationRow): ActiveAiConfig {
   const normalized = withMissingConfigParts(row.features, row.outputSchema);
+  const upgradedSystemPrompt = upgradeLegacySystemPrompt(row.systemPrompt);
+  const features =
+    upgradedSystemPrompt !== row.systemPrompt && row.version === 1
+      ? { ...DEFAULT_FEATURES }
+      : normalized.features;
   return {
     id: row.id,
     name: row.name,
     provider: "openai-compatible",
     model: row.model,
-    systemPrompt: row.systemPrompt,
+    systemPrompt: upgradedSystemPrompt,
     audienceFocus: row.audienceFocus ?? "",
     temperature: row.temperature,
     maxTokens: row.maxTokens,
-    features: normalized.features,
+    features,
     decisionRules: row.decisionRules,
     outputSchema: normalized.outputSchema,
     publishingTemplate: upgradeLegacyTemplateFooter(row.publishingTemplate ?? ""),

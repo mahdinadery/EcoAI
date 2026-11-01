@@ -112,13 +112,14 @@ test("only enabled features appear in the output contract", () => {
   assert.doesNotMatch(systemPrompt, /"importance"/);
 });
 
-test("default audience focus anchors relevance to analytical economics & English research", () => {
+test("default audience focus anchors relevance to The Economics of AI", () => {
   const { systemPrompt } = buildAIAnalysisPrompt(config(), article);
   assert.ok(systemPrompt.includes("تعریف مخاطب و ملاک امتیاز مرتبط بودن"));
   assert.ok(systemPrompt.includes(DEFAULT_AUDIENCE_FOCUS));
-  assert.ok(systemPrompt.includes("اقتصاددانان"));
-  assert.ok(systemPrompt.includes("سیاست پولی"));
-  assert.ok(systemPrompt.includes("IMF"));
+  assert.ok(systemPrompt.includes("اقتصاد هوش مصنوعی"));
+  assert.ok(systemPrompt.includes("The Economics of AI"));
+  assert.ok(systemPrompt.includes("بهره‌وری"));
+  assert.ok(systemPrompt.includes("NBER"));
   assert.ok(systemPrompt.includes("relevance زیر ۳۰"));
   assert.ok(systemPrompt.includes("shouldSend=false"));
 });

@@ -273,7 +273,7 @@ export const LEGACY_GENERAL_ECON_SYSTEM_PROMPT = `شما یک تحلیلگر ا�
 
 پاسخ باید دقیقاً و فقط یک شیء JSON معتبر باشد؛ هیچ متن یا توضیح اضافه‌ای خارج از آن ننویس.`;
 
-export const DEFAULT_SYSTEM_PROMPT = `شما یک اقتصاددان ارشد تخصصی حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) و مترجم حرفه‌ای مقالات و پژوهش‌های اقتصادی-فناوری انگلیسی به فارسی هستید. وظیفهٔ شما مطالعهٔ دقیق مقاله یا گزارش انگلیسی ارائه‌شده، استخراج استدلال اقتصادی، شواهد تجربی و پیامدهای آن در تلاقی هوش مصنوعی و اقتصاد، و تولید یک پاسخ ساختاریافته JSON دقیق به زبان فارسی روان و علمی برای انتشار در کانال تخصصی پیام‌رسان «بله» است.
+export const LEGACY_PROSE_AIECON_SYSTEM_PROMPT = `شما یک اقتصاددان ارشد تخصصی حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) و مترجم حرفه‌ای مقالات و پژوهش‌های اقتصادی-فناوری انگلیسی به فارسی هستید. وظیفهٔ شما مطالعهٔ دقیق مقاله یا گزارش انگلیسی ارائه‌شده، استخراج استدلال اقتصادی، شواهد تجربی و پیامدهای آن در تلاقی هوش مصنوعی و اقتصاد، و تولید یک پاسخ ساختاریافته JSON دقیق به زبان فارسی روان و علمی برای انتشار در کانال تخصصی پیام‌رسان «بله» است.
 
 اصول الزامی ترجمه و تحلیل اقتصاد هوش مصنوعی:
 - عنوان انگلیسی مقاله را در فیلد «translatedTitle» به فارسی دقیق، سلیس و تخصصی ترجمه کن و از ترجمهٔ تحت‌اللفظی و ماشینی پرهیز کن.
@@ -283,8 +283,42 @@ export const DEFAULT_SYSTEM_PROMPT = `شما یک اقتصاددان ارشد ت
 
 پاسخ باید دقیقاً و فقط یک شیء JSON معتبر باشد؛ هیچ متن یا توضیح اضافه‌ای خارج از آن ننویس.`;
 
+export const DEFAULT_SYSTEM_PROMPT = `شما یک اقتصاددان ارشد تخصصی حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) و مترجم حرفه‌ای مقالات و پژوهش‌های اقتصادی-فناوری انگلیسی به فارسی هستید. وظیفهٔ شما مطالعهٔ دقیق مقاله یا گزارش انگلیسی ارائه‌شده، استخراج ساختار پژوهشی یا تحلیلی آن در تلاقی هوش مصنوعی و اقتصاد، و تولید یک پاسخ ساختاریافته JSON دقیق به زبان فارسی روان و علمی برای انتشار در کانال تخصصی پیام‌رسان «بله» است.
+
+اصول الزامی ترجمه و خلاصه‌سازی ساختاریافته:
+- عنوان انگلیسی مقاله را در فیلد «translatedTitle» به فارسی دقیق، سلیس و تخصصی ترجمه کن و از ترجمهٔ تحت‌اللفظی و ماشینی پرهیز کن.
+- در فیلد «summary» متن را به فارسی روان و در سطرهای مجزا (جداشده با کاراکتر خط جدید \\n و بدون ستاره ** یا Markdown اضافی) بر اساس ماهیت مطلب تنظیم کن:
+  ۱) اگر مطلب یک «پژوهش تجربی، مقالهٔ علمی/کاری (Working Paper) یا گزارش داده‌محور» است، در قالب چهار بخش زیر بنویس:
+     ❓ پرسش پژوهش: [سؤال یا فرضیهٔ اصلی پژوهش]
+     📊 داده‌ها: [داده‌ها، نمونهٔ آماری، بازهٔ زمانی یا منبع داده‌های استفاده‌شده]
+     🔬 روش: [روش تجربی، اقتصادسنجی، آزمایش میدانی یا چارچوب مدل‌سازی]
+     📈 نتایج: [یافته‌های کلیدی، برآوردهای کمّی و نتیجهٔ اصلی پژوهش]
+     (قانون حیاتی: اگر در متن ورودی «داده‌ها» یا «روش» صراحتاً ذکر نشده بود، هرگز حدس نزن و عباراتی مثل «ذکر نشده» یا «ندارد» ننویس؛ صرفاً همان سطر را نیاور.)
+  ۲) اگر مطلب یک «یادداشت تحلیلی، دیدگاه اقتصاددانان یا گزارش سیاستی/صنعتی فاقد داده و روش تجربی» است، در سه سطر زیر بنویس:
+     ❓ مسئلهٔ محوری: [پرسش یا چالش اصلی مطرح‌شده در مقاله]
+     ⚙️ سازوکار اقتصادی: [استدلال تحلیلی، شواهد متن و کانال اثرگذاری در اقتصاد هوش مصنوعی]
+     📈 جمع‌بندی و نتایج: [نتیجه‌گیری، پیامد یا چشم‌انداز کلیدی نویسنده]
+- اصطلاحات تخصصی اقتصاد و هوش مصنوعی را به معادل‌های استاندارد و جاافتادهٔ فارسی برگردان و تنها در صورت کمک به دقت علمی، اختصارهای کلیدی (مانند AI، GPU، CapEx، TFP، DiD، RCT، ROI، NBER، IMF) را ذکر کن.
+- هرگز واقعیت، عدد، تاریخ، دیتاست یا روش تحقیقی که در متن ورودی نیامده را حدس نزن یا اختراع نکن. اگر متن دریافتی صرفاً یک چکیدهٔ کوتاه است، صرفاً بر پایهٔ اطلاعات همان متن بنویس.
+
+پاسخ باید دقیقاً و فقط یک شیء JSON معتبر باشد؛ هیچ متن یا توضیح اضافه‌ای خارج از آن ننویس.`;
+
 export function upgradeLegacySystemPrompt(prompt: string): string {
-  return prompt.trim() === LEGACY_GENERAL_ECON_SYSTEM_PROMPT.trim() ? DEFAULT_SYSTEM_PROMPT : prompt;
+  const trimmed = prompt.trim();
+  return trimmed === LEGACY_GENERAL_ECON_SYSTEM_PROMPT.trim() ||
+    trimmed === LEGACY_PROSE_AIECON_SYSTEM_PROMPT.trim()
+    ? DEFAULT_SYSTEM_PROMPT
+    : prompt;
+}
+
+export const LEGACY_PROSE_SUMMARY_INSTRUCTION =
+  "یک خلاصه و ترجمهٔ تحلیلی، دقیق و خوش‌خوان به زبان فارسی روان از مقاله بنویس (۷۰ تا ۱۶۰ کلمه) که پرسش محوری، سازوکار اقتصادی هوش مصنوعی، داده‌ها/شواهد کلیدی و جمع‌بندی نویسنده را پوشش دهد.";
+
+export const SUMMARY_DEFAULT_INSTRUCTION =
+  "خلاصهٔ ساختاریافته و خوش‌خوان به زبان فارسی روان در سطرهای مجزا (با \\n و بدون ستاره/Markdown) بنویس (۹۰ تا ۲۲۰ کلمه): برای مقالات پژوهشی و گزارش‌های داده‌محور با سطرهای «❓ پرسش پژوهش:»، «📊 داده‌ها:»، «🔬 روش:» و «📈 نتایج:» (هر سطری که در متن ورودی صراحتاً ذکر نشده را حذف کن و «ندارد/ذکر نشده» ننویس)؛ و برای یادداشت‌های تحلیلی/سیاستیِ فاقد داده و روش تجربی با سطرهای «❓ مسئلهٔ محوری:»، «⚙️ سازوکار اقتصادی:» و «📈 جمع‌بندی و نتایج:».";
+
+export function upgradeLegacySummaryInstruction(instruction: string): string {
+  return instruction.trim() === LEGACY_PROSE_SUMMARY_INSTRUCTION ? SUMMARY_DEFAULT_INSTRUCTION : instruction;
 }
 
 export const DEFAULT_FEATURES: AiFeaturesConfig = {
@@ -295,8 +329,7 @@ export const DEFAULT_FEATURES: AiFeaturesConfig = {
   },
   summary: {
     enabled: true,
-    instruction:
-      "یک خلاصه و ترجمهٔ تحلیلی، دقیق و خوش‌خوان به زبان فارسی روان از مقاله بنویس (۷۰ تا ۱۶۰ کلمه) که پرسش محوری، سازوکار اقتصادی هوش مصنوعی، داده‌ها/شواهد کلیدی و جمع‌بندی نویسنده را پوشش دهد.",
+    instruction: SUMMARY_DEFAULT_INSTRUCTION,
   },
   category: {
     enabled: true,
@@ -382,10 +415,11 @@ export const DEFAULT_OUTPUT_SCHEMA: AiOutputSchema = [
 
 /**
  * Default publishing layout for Bale: bilingual title (Persian + original
- * English headline) followed by fluent Persian analytical summary, economic
- * significance, core thesis, score, source link, and Persian hashtags.
+ * English headline) followed by structured Persian summary (پرسش پژوهش /
+ * داده‌ها / روش / نتایج), economic significance («چرا مهم است»), score, source
+ * link, and Persian hashtags — without repeating `mainEvent` underneath.
  */
-export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
+export const LEGACY_MAIN_EVENT_PUBLISHING_TEMPLATE = `📰 {category}
 
 {bilingualTitle}
 
@@ -403,16 +437,36 @@ export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
 
 {hashtags}`;
 
+export const DEFAULT_PUBLISHING_TEMPLATE = `📰 {category}
+
+{bilingualTitle}
+
+{summary}
+
+چرا مهم است:
+{whyItMatters}
+
+اهمیت: {importanceScore} از ۱۰۰
+
+{originalUrl}
+
+{hashtags}`;
+
 /**
- * Footer migration for stored publishing templates: the old default footer
- * «منبع: {sourceName}» + «{originalUrl}» becomes just «{originalUrl}» — which
- * renders as the hyperlinked «لینک اصلی خبر». Only the exact legacy pair is
- * rewritten; every other operator-authored line is preserved as-is.
+ * Footer & structured-layout migration for stored publishing templates:
+ * 1) the old default footer «منبع: {sourceName}» + «{originalUrl}» becomes just «{originalUrl}»;
+ * 2) an untouched default template containing the redundant «محور اصلی مقاله: {mainEvent}»
+ *    block upgrades cleanly to `DEFAULT_PUBLISHING_TEMPLATE`.
+ * Every custom operator-authored template is preserved as-is.
  */
 const LEGACY_TEMPLATE_FOOTER = /منبع:[ \t]*\{sourceName\}[ \t]*\r?\n[ \t]*\{originalUrl\}/g;
 
 export function upgradeLegacyTemplateFooter(template: string): string {
-  return template.replace(LEGACY_TEMPLATE_FOOTER, "{originalUrl}");
+  const migratedFooter = template.replace(LEGACY_TEMPLATE_FOOTER, "{originalUrl}");
+  if (migratedFooter.replace(/\r\n/g, "\n").trim() === LEGACY_MAIN_EVENT_PUBLISHING_TEMPLATE.trim()) {
+    return DEFAULT_PUBLISHING_TEMPLATE;
+  }
+  return migratedFooter;
 }
 
 export const DEFAULT_CONFIG_NAME = "پیکربندی اقتصاد هوش مصنوعی — The Economics of AI (پیش‌فرض)";

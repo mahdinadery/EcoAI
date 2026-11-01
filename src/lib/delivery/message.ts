@@ -13,7 +13,7 @@ import type { NewsRow } from "@/db/schema";
  * directly by Node's native test runner (`node --test`).
  */
 
-const MAX_SUMMARY_LENGTH = 1200;
+const MAX_SUMMARY_LENGTH = 1500;
 
 /**
  * Markdown hyperlink helpers (Bale renders `parse_mode: "Markdown"`). The
@@ -71,6 +71,18 @@ export function stripEmptyLabelBlocks(text: string): string {
 
 function compact(value: string | null | undefined, limit: number): string {
   const text = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return "—";
+  return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
+}
+
+function compactMultiline(value: string | null | undefined, limit: number): string {
+  const text = (value ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (!text) return "—";
   return text.length > limit ? `${text.slice(0, limit).trimEnd()}…` : text;
 }
@@ -146,7 +158,7 @@ export function buildNewsMessage(
     formatBilingualTitle(article.title, article.translatedTitle, 300),
     "",
     "خلاصه:",
-    escapeMd(compact(article.summary, MAX_SUMMARY_LENGTH)),
+    escapeMd(compactMultiline(article.summary, MAX_SUMMARY_LENGTH)),
     ...(why ? ["", "چرا مهم است:", escapeMd(compact(why, 280))] : []),
     ...(entities ? ["", "نهادها:", escapeMd(entities)] : []),
     ...related.flatMap((title) => ["", "مرتبط با:", escapeMd(compact(title, 160))]),

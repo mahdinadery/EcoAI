@@ -304,7 +304,7 @@ function ArticleCard({
           <div className="mt-4 space-y-3 border-t border-accent-line/50 pt-3 text-sm">
             <div>
               <p className="font-bold text-accent-ink">خلاصه تحلیل هوشمند:</p>
-              <p className="mt-1 leading-7 text-ink-soft">{item.summary}</p>
+              <p className="mt-1 whitespace-pre-line leading-7 text-ink-soft">{item.summary}</p>
             </div>
             <div>
               <p className="font-bold text-accent-ink">علت تصمیم‌گیری:</p>

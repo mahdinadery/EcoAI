@@ -101,7 +101,7 @@ export default async function AdminDeliveryDetailPage({ params, searchParams }: 
                   <Row label="وضعیت خبر" value={article.status} />
                 </dl>
                 {article.summary ? (
-                  <p className="mt-3 rounded-xl bg-surface-2 p-3 text-sm leading-7 text-ink-soft">{article.summary}</p>
+                  <p className="mt-3 whitespace-pre-line rounded-xl bg-surface-2 p-3 text-sm leading-7 text-ink-soft">{article.summary}</p>
                 ) : null}
               </Card>
 
@@ -117,7 +117,7 @@ export default async function AdminDeliveryDetailPage({ params, searchParams }: 
                       </span>
                       <span className="rounded-full bg-surface-3 px-2.5 py-1 text-muted">{formatFull(analysis.createdAt.toISOString())}</span>
                     </div>
-                    <p className="mt-3 text-sm leading-7 text-ink-soft">{analysis.summary}</p>
+                    <p className="mt-3 whitespace-pre-line text-sm leading-7 text-ink-soft">{analysis.summary}</p>
                     <div className="mt-3 flex flex-wrap gap-2 text-xs">
                       <Chip>دسته: {analysis.category ?? "—"}</Chip>
                       <Chip>اهمیت: {analysis.importance ?? "—"}</Chip>

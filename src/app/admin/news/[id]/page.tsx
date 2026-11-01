@@ -159,7 +159,7 @@ export default async function AdminNewsDetailPage({ params, searchParams }: Page
               <h2 className="text-sm font-bold text-ink">تحلیل هوش مصنوعی (آخرین نتیجه)</h2>
               {latest ? (
                 <div className="mt-3 space-y-3 text-sm">
-                  <p className="leading-7 text-ink-soft">{latest.summary}</p>
+                  <p className="whitespace-pre-line leading-7 text-ink-soft">{latest.summary}</p>
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className="rounded-full bg-indigo-50 px-2.5 py-1 font-bold text-indigo-700">دسته: {latest.category ?? "—"}</span>
                     <span className="rounded-full bg-surface-2 px-2.5 py-1 text-muted">اهمیت: {latest.importance ?? "—"}</span>

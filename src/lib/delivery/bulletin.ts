@@ -146,6 +146,17 @@ function compact(text: string | null | undefined, max: number): string {
   return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
 }
 
+function compactSummaryForBulletin(text: string | null | undefined, max: number): string {
+  const clean = (text ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
+}
+
 function formatBulletinTitles(item: BulletinItem): {
   primaryTitle: string;
   originalTitle: string;
@@ -225,7 +236,7 @@ export function buildBulletinMessage(args: {
     if (titles.hasDistinctTranslation) {
       lines.push(`🌐 ${titles.originalTitle}`);
     }
-    const oneLiner = compact(item.oneLiner, 300);
+    const oneLiner = compactSummaryForBulletin(item.oneLiner, 520);
     if (settings.showSummary && oneLiner) lines.push(escapeMd(oneLiner));
     const why = compact(item.whyItMatters, 240);
     if (settings.showWhy && why) lines.push(`چرا مهم است: ${escapeMd(why)}`);

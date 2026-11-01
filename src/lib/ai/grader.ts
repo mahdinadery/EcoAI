@@ -7,7 +7,7 @@
  * gray-area importance can never smuggle an off-topic item into the channel.
  */
 
-import { callAiChatCompletion, type AiTokenUsage } from "./completion";
+import { callAiChatCompletion, resolveAiApiKey, type AiTokenUsage } from "./completion";
 import { isBorderlineRelevance, parseGradeVerdict, type GradeVerdict } from "./grade-rules";
 
 const GRADER_SYSTEM_PROMPT =
@@ -29,7 +29,7 @@ export async function gradeRelevanceWithUsage(input: {
   summary: string | null;
   audienceFocus?: string | null;
 }): Promise<GradeRelevanceOutcome> {
-  if (!process.env.AI_API_KEY?.trim()) return { verdict: null, usage: null };
+  if (!resolveAiApiKey()) return { verdict: null, usage: null };
 
   const focus =
     input.audienceFocus?.trim() ||
@@ -52,6 +52,7 @@ export async function gradeRelevanceWithUsage(input: {
       userPrompt,
       temperature: 0,
       maxTokens: 16,
+      jsonMode: false,
     });
 
     if (!completion.ok) return { verdict: null, usage: null };

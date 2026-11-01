@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   describeRule,
+  enforceDecisionRuleFloors,
   evaluateArticle,
   loadAutoSendRule,
   policyToRule,
@@ -167,4 +168,22 @@ test("describeRule renders policy summary", () => {
   assert.ok(lines.some((line) => line.includes("اقتصاد")));
   assert.ok(lines.some((line) => line.includes("shouldSend")));
   assert.ok(lines.some((line) => line.includes("AND")));
+});
+
+test("enforceDecisionRuleFloors raises looser schedule/env thresholds to active decisionRules floors", () => {
+  const floored = enforceDecisionRuleFloors(
+    rule({ minImportance: 50, minRelevance: 50, minNovelty: 0 }),
+    { minImportanceToSend: 85, minRelevanceToSend: 75, minNoveltyToSend: 20 },
+  );
+  assert.equal(floored.minImportance, 85);
+  assert.equal(floored.minRelevance, 75);
+  assert.equal(floored.minNovelty, 20);
+
+  // Corroboration count never inflates raw importance past a strict floor:
+  const check = evaluateArticle(
+    article({ importanceScore: 80, relevanceScore: 80, noveltyScore: 30, corroborationCount: 4 }),
+    floored,
+  );
+  assert.equal(check.matches, false);
+  assert.ok(check.reasons.includes("importance_below_threshold"));
 });

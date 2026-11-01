@@ -16,7 +16,7 @@ import { deliveries, news, type NewsRow } from "@/db/schema";
 import { sendNewsDelivery } from "@/lib/delivery";
 import { expandTargets } from "@/lib/delivery/types";
 import { and, desc, inArray, sql } from "drizzle-orm";
-import { resolveAutoSendRule } from "./resolve-rule";
+import { applyActiveSendFloors, resolveAutoSendRule } from "./resolve-rule";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 
 export type AutoSendItem = {
@@ -100,8 +100,10 @@ export async function runAutoDeliveryPass(
 ): Promise<AutoPassResult> {
   // The scheduled publisher passes its own rule so its configured time slots,
   // destination and thresholds stay independent from the "after analysis"
-  // auto-send policy.
-  const rule = options.rule ?? (await resolveAutoSendRule());
+  // auto-send policy, while still honoring active `decisionRules` floors.
+  const rule = options.rule
+    ? await applyActiveSendFloors(options.rule)
+    : await resolveAutoSendRule();
 
   if (!rule.enabled && !options.force) {
     return { ...NOT_MATCHED, destination: rule.destination };

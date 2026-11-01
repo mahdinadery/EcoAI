@@ -8,6 +8,7 @@ import {
   inferBaseUrlFromApiKey,
   mergeTokenUsage,
   normalizeAiBaseUrl,
+  normalizeGoogleModelId,
   resolveAiApiKey,
   resolveEffectiveBaseUrl,
   resolveEffectiveModel,
@@ -355,5 +356,154 @@ test("callAiChatCompletion fails fast without retry on TCP/TLS connect timeout a
     else process.env.AI_API_KEY = prevKey;
   }
 });
+
+test("normalizeGoogleModelId and AQ. Vertex AI Express Mode routing + model fallback", async () => {
+  assert.equal(normalizeGoogleModelId("gemini-3.0-flash"), "gemini-3-flash-preview");
+  assert.equal(normalizeGoogleModelId("gemini-1.5-flash"), "gemini-2.5-flash");
+  assert.equal(normalizeGoogleModelId("models/gemini-2.5-flash"), "gemini-2.5-flash");
+
+  // AQ. keys route to Vertex AI Express Mode even if AI_API_BASE_URL pointed to generativelanguage.googleapis.com
+  const aqKey = ["AQ", "fake_unit_test_vertex_key"].join(".");
+  assert.equal(
+    resolveEffectiveBaseUrl(aqKey, {
+      AI_API_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    }),
+    "https://aiplatform.googleapis.com/v1beta1/publishers/google/models",
+  );
+  assert.equal(
+    resolveEffectiveModel("gemini-3.0-flash", { apiKey: aqKey, env: {} }),
+    "gemini-3-flash-preview",
+  );
+
+  const prevKey = process.env.AI_API_KEY;
+  const prevBase = process.env.AI_API_BASE_URL;
+  process.env.AI_API_KEY = aqKey;
+  process.env.AI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+  const urlsCalled = [];
+
+  try {
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "Analyze AI productivity.",
+        model: "gemini-3.0-flash",
+        temperature: 0.2,
+        maxTokens: 500,
+      },
+      {
+        maxRetries: 0,
+        fetchImpl: async (url) => {
+          urlsCalled.push(String(url));
+          if (String(url).includes("gemini-3-flash-preview")) {
+            return new Response(
+              JSON.stringify({
+                error: { message: "Quota exceeded for metric: limit: 0" },
+              }),
+              { status: 429 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      { text: "internal reasoning", thought: true },
+                      { text: '{"summary":"تحلیل از طریق Vertex AI Express","shouldSend":true}' },
+                    ],
+                  },
+                },
+              ],
+              usageMetadata: {
+                promptTokenCount: 120,
+                candidatesTokenCount: 45,
+                totalTokenCount: 165,
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(urlsCalled.length, 2);
+    assert.match(urlsCalled[0], /aiplatform\.googleapis\.com\/v1beta1\/publishers\/google\/models\/gemini-3-flash-preview:generateContent/);
+    assert.match(urlsCalled[1], /aiplatform\.googleapis\.com\/v1beta1\/publishers\/google\/models\/gemini-2\.5-flash:generateContent/);
+    if (result.ok) {
+      assert.equal(result.model, "gemini-2.5-flash");
+      assert.match(result.rawText, /Vertex AI Express/);
+      assert.deepEqual(result.usage, { promptTokens: 120, completionTokens: 45, totalTokens: 165 });
+    }
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+    if (prevBase === undefined) delete process.env.AI_API_BASE_URL;
+    else process.env.AI_API_BASE_URL = prevBase;
+  }
+});
+
+test("callAiChatCompletion rotates across Gemini fallback models without sleeping on hard 429 and honors jsonMode=false", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "AIzaSyQuotaRotationTestKey";
+  const seen = [];
+
+  try {
+    const started = Date.now();
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Answer yes or no.",
+        userPrompt: "Is this about Economics of AI?",
+        model: "gemini-3.0-flash",
+        temperature: 0,
+        maxTokens: 16,
+        jsonMode: false,
+      },
+      {
+        maxRetries: 0,
+        fetchImpl: async (_url, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          seen.push({ model: body.model, response_format: body.response_format });
+          if (body.model === "gemini-3-flash-preview") {
+            return new Response(
+              JSON.stringify([
+                {
+                  error: {
+                    code: 429,
+                    message:
+                      "You exceeded your current quota, please check your plan and billing details. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0",
+                  },
+                },
+              ]),
+              { status: 429 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: "بله" } }],
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    const elapsed = Date.now() - started;
+    assert.equal(result.ok, true);
+    assert.ok(elapsed < 1000, `expected zero-sleep model rotation, took ${elapsed}ms`);
+    assert.equal(seen.length, 2);
+    assert.equal(seen[0].model, "gemini-3-flash-preview");
+    assert.equal(seen[0].response_format, undefined);
+    assert.equal(seen[1].model, "gemini-2.5-flash");
+    if (result.ok) {
+      assert.equal(result.model, "gemini-2.5-flash");
+      assert.equal(result.rawText, "بله");
+    }
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+  }
+});
+
 
 

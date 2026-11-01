@@ -8,7 +8,7 @@
  * SERVER-SIDE ONLY (reads AI_API_KEY through completion.ts).
  */
 
-import { callAiChatCompletion } from "./completion";
+import { callAiChatCompletion, resolveAiApiKey } from "./completion";
 
 export type BulletinBriefInput = {
   title: string;
@@ -30,7 +30,7 @@ export async function synthesizeBulletinBrief(
 ): Promise<string | null> {
   if (config.enabled === false) return null;
   if (items.length === 0) return null;
-  if (!process.env.AI_API_KEY?.trim()) return null;
+  if (!resolveAiApiKey()) return null;
 
   const listing = items
     .slice(0, 8)
@@ -49,6 +49,7 @@ export async function synthesizeBulletinBrief(
       model: config.model ?? undefined,
       temperature: config.temperature ?? 0.4,
       maxTokens: Math.min(config.maxTokens ?? 400, 500),
+      jsonMode: false,
     });
 
     if (!completion.ok) return null;

@@ -10,12 +10,7 @@
  */
 
 import type { NewsRow } from "@/db/schema";
-
-// Mirrors CORROBORATION_BONUS in src/lib/news/corroboration.ts — kept inline on
-// purpose: this module is imported by the Node test runner, which cannot
-// resolve runtime `@/` imports (type-only imports are erased and fine).
-const CORROBORATION_BONUS = 10;
-import type { AiAutoSendPolicy } from "@/lib/ai/config-types";
+import type { AiAutoSendPolicy, AiDecisionRules } from "@/lib/ai/config-types";
 import type { DeliveryTarget } from "@/lib/delivery/types";
 
 export type AutoSendRule = {
@@ -114,6 +109,31 @@ export function policyToRule(policy: AiAutoSendPolicy): AutoSendRule {
   };
 }
 
+function clampThresholdFloor(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+/**
+ * Applies the active AI configuration's `decisionRules` as hard minimum score
+ * floors on any automatic / scheduled publishing rule.
+ *
+ * Ensures that raising minimum importance/relevance/novelty in `/admin/ai-config`
+ * can never be bypassed by a looser schedule card or `AUTO_SEND_*` env value.
+ */
+export function enforceDecisionRuleFloors(
+  rule: AutoSendRule,
+  decisionRules?: Pick<AiDecisionRules, "minImportanceToSend" | "minRelevanceToSend" | "minNoveltyToSend"> | null,
+): AutoSendRule {
+  if (!decisionRules) return rule;
+  return {
+    ...rule,
+    minImportance: Math.max(rule.minImportance, clampThresholdFloor(decisionRules.minImportanceToSend)),
+    minRelevance: Math.max(rule.minRelevance, clampThresholdFloor(decisionRules.minRelevanceToSend)),
+    minNovelty: Math.max(rule.minNovelty, clampThresholdFloor(decisionRules.minNoveltyToSend)),
+  };
+}
+
 export type RuleCheck = {
   matches: boolean;
   /** Machine-readable reasons, e.g. "importance_below_threshold". */
@@ -147,10 +167,10 @@ export function evaluateArticle(article: NewsRow, rule: AutoSendRule): RuleCheck
     return { matches: false, reasons };
   }
 
-  // Phase 3 (#10): multi-source confirmation gives a small importance bonus
-  // (relevance is NEVER touched — the AND rule stays strict).
-  const importance =
-    (article.importanceScore ?? 0) + ((article.corroborationCount ?? 0) >= 2 ? CORROBORATION_BONUS : 0);
+  // Compare against the article's stored raw importance score directly so
+  // corroboration bonuses can never push a lower-scored article across a strict
+  // minimum importance threshold.
+  const importance = article.importanceScore ?? 0;
   const relevance = article.relevanceScore ?? 0;
   const novelty = article.noveltyScore ?? 0;
 

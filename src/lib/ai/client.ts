@@ -20,6 +20,7 @@ import { parseAiOutput, type ParsedAiOutput } from "./output-parser";
 import {
   callAiChatCompletion,
   mergeTokenUsage,
+  resolveAiApiKey,
   resolveEffectiveModel,
   type AiTokenUsage,
   type CompletionErrorKind,
@@ -45,7 +46,7 @@ export type AiAnalysisResult =
 
 /** Check if the AI provider has been configured. */
 export function isAiConfigured(): boolean {
-  return Boolean(process.env.AI_API_KEY?.trim());
+  return Boolean(resolveAiApiKey());
 }
 
 export { resolveEffectiveModel };

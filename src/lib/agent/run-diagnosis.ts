@@ -96,10 +96,12 @@ export function diagnoseRunSummary(summary: RunSummaryLike | null | undefined): 
   }
 
   if (analysis && count(analysis.failed) > 0 && count(analysis.analyzed) === 0) {
+    const firstError = summary.errors?.find((line) => line.trim().length > 0)?.trim();
     return {
       level: "error",
       title: "تحلیل هوش مصنوعی انجام نشد؛ خبری برای ارسال آماده نشد.",
       hints: [
+        ...(firstError ? [`علت دقیق ثبت‌شده: ${firstError}`] : []),
         "AI_API_KEY و در صورت نیاز AI_API_BASE_URL / AI_API_MODEL را در میزبان بررسی کنید.",
         "از صفحه «پیکربندی AI» یک خبر را دستی تحلیل کنید تا متن خطا را ببینید.",
       ],

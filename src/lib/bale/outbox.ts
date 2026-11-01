@@ -8,7 +8,7 @@
 
 import { db } from "@/db";
 import { deliveries } from "@/db/schema";
-import { desc } from "drizzle-orm";
+import { desc, inArray } from "drizzle-orm";
 
 export type OutboxStatus = "sent" | "failed" | "dry-run";
 
@@ -75,6 +75,7 @@ export async function listOutboxEntries(): Promise<OutboxEntry[]> {
     dbRows = await db
       .select()
       .from(deliveries)
+      .where(inArray(deliveries.status, ["sent", "failed"]))
       .orderBy(desc(deliveries.createdAt))
       .limit(MAX_ENTRIES);
   } catch (error) {

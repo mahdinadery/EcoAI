@@ -91,7 +91,11 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
   return { pass, skipped };
 }
 
-/** Oldest READY_FOR_AI items first, so the backlog drains in publish order. */
+/**
+ * Oldest READY_FOR_AI items first, followed by previously FAILED unanalyzed
+ * items so transient AI outages or key fixes automatically drain without
+ * manual per-item clicks.
+ */
 export async function selectAnalysisBacklog(limit: number, excludeIds: string[] = []): Promise<string[]> {
   if (limit <= 0) return [];
 
@@ -100,7 +104,7 @@ export async function selectAnalysisBacklog(limit: number, excludeIds: string[] 
     .from(news)
     .where(
       and(
-        eq(news.status, "READY_FOR_AI"),
+        sql`(${news.status} = 'READY_FOR_AI' OR (${news.status} = 'FAILED' AND ${news.analyzedAt} IS NULL))`,
         excludeIds.length > 0
           ? sql`${news.id} NOT IN (${sql.join(
               excludeIds.map((id) => sql`${id}::uuid`),
@@ -109,7 +113,10 @@ export async function selectAnalysisBacklog(limit: number, excludeIds: string[] 
           : sql`TRUE`,
       ),
     )
-    .orderBy(sql`coalesce(${news.publishedAt}, ${news.createdAt}) ASC`)
+    .orderBy(
+      sql`CASE WHEN ${news.status} = 'READY_FOR_AI' THEN 0 ELSE 1 END ASC`,
+      sql`coalesce(${news.publishedAt}, ${news.createdAt}) ASC`,
+    )
     .limit(limit);
 
   return rows.map((row) => row.id);

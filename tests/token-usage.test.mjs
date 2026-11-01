@@ -263,3 +263,97 @@ test("callAiChatCompletion shrinks max_tokens automatically on TPM / credit-limi
   }
 });
 
+test("callAiChatCompletion sets reasoning_effort=low on gemini-2.5 and falls back to gemini-2.0-flash on timeout", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "AIzaSyTestGeminiKey";
+  const seenRequests = [];
+
+  try {
+    assert.equal(inferBaseUrlFromApiKey("aa-AvalAiTestKey"), "https://api.avalai.ir/v1");
+
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "B".repeat(4_000),
+        model: "gemini-2.5-flash",
+        temperature: 0.2,
+        maxTokens: 2000,
+      },
+      {
+        timeoutMs: 80,
+        retryBaseDelayMs: 5,
+        fetchImpl: async (_url, init) => {
+          const parsedBody = JSON.parse(String(init?.body ?? "{}"));
+          seenRequests.push({
+            model: parsedBody.model,
+            reasoning_effort: parsedBody.reasoning_effort,
+            max_tokens: parsedBody.max_tokens,
+            userLen: parsedBody.messages[1].content.length,
+          });
+          if (seenRequests.length === 1) {
+            const abortErr = new Error("This operation was aborted");
+            abortErr.name = "AbortError";
+            throw abortErr;
+          }
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"summary":"بازگشت سریع با مدل جایگزین","shouldSend":true}' } }],
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(seenRequests.length, 2);
+    assert.equal(seenRequests[0].model, "gemini-2.5-flash");
+    assert.equal(seenRequests[0].reasoning_effort, "low");
+    assert.equal(seenRequests[1].model, "gemini-2.0-flash");
+    assert.equal(seenRequests[1].reasoning_effort, undefined);
+    assert.equal(seenRequests[1].max_tokens, 1200);
+    assert.ok(seenRequests[1].userLen < 3000);
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+  }
+});
+
+test("callAiChatCompletion fails fast without retry on TCP/TLS connect timeout and names baseUrl", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "sk-test-openai-key";
+  let attempts = 0;
+
+  try {
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "Test connect failure.",
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        maxTokens: 500,
+      },
+      {
+        retryBaseDelayMs: 5,
+        fetchImpl: async () => {
+          attempts += 1;
+          const err = new TypeError("fetch failed");
+          err.cause = { code: "UND_ERR_CONNECT_TIMEOUT", message: "Connect Timeout Error" };
+          throw err;
+        },
+      },
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(attempts, 1, "must not retry when TCP/TLS connection cannot be established");
+    if (!result.ok) {
+      assert.equal(result.kind, "network_error");
+      assert.match(result.message, /https:\/\/api\.openai\.com\/v1/);
+    }
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+  }
+});
+
+

@@ -8,7 +8,7 @@
  */
 
 const MAX_EXTRACTED_BODY_CHARS = 12_000;
-const MAX_AI_CONTEXT_CHARS = 8_000;
+const MAX_AI_CONTEXT_CHARS = 4_800;
 const MIN_RICH_CONTENT_CHARS = 450;
 
 const NAMED_HTML_ENTITIES: Record<string, string> = {

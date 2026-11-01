@@ -7,17 +7,25 @@
  * text through the exact same network call, instead of duplicating fetch logic.
  */
 
+import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
+
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 const GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const AVALAI_BASE_URL = "https://api.avalai.ir/v1";
+const XAI_BASE_URL = "https://api.x.ai/v1";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const FAST_FALLBACK_GEMINI_MODEL = "gemini-2.0-flash";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_XAI_MODEL = "grok-3-mini";
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 45_000;
+const FAST_FALLBACK_TIMEOUT_MS = 25_000;
 const FALLBACK_COMPACT_MAX_TOKENS = 1_200;
 
 const MAX_RETRIES = 2;
@@ -71,13 +79,15 @@ export function inferBaseUrlFromApiKey(apiKey?: string | null): string | null {
   if (key.startsWith("AIza")) return GEMINI_OPENAI_BASE_URL;
   if (key.startsWith("gsk_")) return GROQ_OPENAI_BASE_URL;
   if (key.startsWith("sk-or-")) return OPENROUTER_BASE_URL;
+  if (key.startsWith("aa-")) return AVALAI_BASE_URL;
+  if (key.startsWith("xai-")) return XAI_BASE_URL;
   return null;
 }
 
 /**
  * Normalizes common OpenAI-compatible provider base URLs so minor configuration
  * slips (trailing `/chat/completions`, missing `/v1` or `/openai`, or unset URL
- * with a recognizable Gemini/Groq/OpenRouter key) still route to the right endpoint.
+ * with a recognizable Gemini/Groq/OpenRouter/AvalAI key) still route to the right endpoint.
  */
 export function normalizeAiBaseUrl(rawBaseUrl?: string | null, apiKey?: string | null): string {
   const explicit = (rawBaseUrl?.trim() ?? "")
@@ -95,23 +105,41 @@ export function normalizeAiBaseUrl(rawBaseUrl?: string | null, apiKey?: string |
   if (/^https:\/\/openrouter\.ai(?:\/api)?$/i.test(base)) {
     return OPENROUTER_BASE_URL;
   }
+  if (/^https:\/\/api\.avalai\.ir$/i.test(base)) {
+    return AVALAI_BASE_URL;
+  }
 
   return base;
 }
 
 /**
  * Resolves the effective base URL from environment variables (`AI_API_BASE_URL`,
- * `AI_BASE_URL`, `OPENAI_BASE_URL`) with key-prefix fallback.
+ * `AI_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`) with key-prefix fallback.
  */
 export function resolveEffectiveBaseUrl(apiKey?: string | null, env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.AI_API_BASE_URL?.trim() || env.AI_BASE_URL?.trim() || env.OPENAI_BASE_URL?.trim() || "";
+  const raw =
+    env.AI_API_BASE_URL?.trim() ||
+    env.AI_BASE_URL?.trim() ||
+    env.OPENAI_BASE_URL?.trim() ||
+    env.OPENAI_API_BASE?.trim() ||
+    "";
   return normalizeAiBaseUrl(raw, apiKey);
+}
+
+/**
+ * Optional outbound HTTP/HTTPS proxy for AI calls (`AI_PROXY_URL`, `HTTPS_PROXY`,
+ * `HTTP_PROXY`) — needed when the host network blocks direct access to global AI providers.
+ */
+export function resolveAiProxyUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.AI_PROXY_URL?.trim() || env.HTTPS_PROXY?.trim() || env.HTTP_PROXY?.trim() || "";
+  return raw || null;
 }
 
 function defaultModelForBaseUrl(baseUrl: string): string {
   if (/generativelanguage\.googleapis\.com/i.test(baseUrl)) return DEFAULT_GEMINI_MODEL;
   if (/api\.groq\.com/i.test(baseUrl)) return DEFAULT_GROQ_MODEL;
   if (/openrouter\.ai/i.test(baseUrl)) return DEFAULT_OPENROUTER_MODEL;
+  if (/api\.x\.ai/i.test(baseUrl)) return DEFAULT_XAI_MODEL;
   return DEFAULT_MODEL;
 }
 
@@ -210,10 +238,20 @@ export function mergeTokenUsage(
   };
 }
 
-function sanitizeSecrets(text: string, apiKey?: string): string {
+function sanitizeSecrets(text: string, apiKey?: string, proxyUrl?: string | null): string {
   const key = apiKey?.trim() || resolveAiApiKey();
-  if (!key) return text;
-  return text.split(key).join("[REDACTED_API_KEY]");
+  let safe = key ? text.split(key).join("[REDACTED_API_KEY]") : text;
+  if (proxyUrl) {
+    try {
+      const parsed = new URL(proxyUrl);
+      if (parsed.password) {
+        safe = safe.split(parsed.password).join("[REDACTED_PROXY]");
+      }
+    } catch {
+      // ignore unparseable proxy URL
+    }
+  }
+  return safe;
 }
 
 function extractRetryWaitMs(detail: string, retryAfterHeader: string | null): number | null {
@@ -247,6 +285,59 @@ function shouldSwitchToMaxCompletionTokens(status: number, detail: string): bool
 
 function shouldDropTemperature(status: number, detail: string): boolean {
   return status === 400 && /temperature.*(?:not supported|only the default|must be 1)/i.test(detail);
+}
+
+function shouldDropReasoningEffort(status: number, detail: string): boolean {
+  return (status === 400 || status === 422) && /reasoning_effort|thinking|extra inputs|unknown field|unrecognized/i.test(detail);
+}
+
+function defaultReasoningEffortForModel(model: string): "low" | null {
+  if (/^gemini-2\.5-/i.test(model)) return "low";
+  if (/^(?:o1|o3|o4|gpt-5)(?:[-/]|$)/i.test(model)) return "low";
+  return null;
+}
+
+let sharedDirectDispatcher: Dispatcher | null = null;
+const sharedProxyDispatchers = new Map<string, Dispatcher>();
+
+function getAiDispatcher(proxyUrl: string | null): Dispatcher | undefined {
+  if (proxyUrl) {
+    let cached = sharedProxyDispatchers.get(proxyUrl);
+    if (!cached) {
+      try {
+        cached = new ProxyAgent({
+          uri: proxyUrl,
+          requestTls: { timeout: CONNECT_TIMEOUT_MS },
+          proxyTls: { timeout: CONNECT_TIMEOUT_MS },
+        });
+        sharedProxyDispatchers.set(proxyUrl, cached);
+      } catch {
+        return undefined;
+      }
+    }
+    return cached;
+  }
+
+  if (!sharedDirectDispatcher) {
+    sharedDirectDispatcher = new Agent({
+      connect: { timeout: CONNECT_TIMEOUT_MS },
+    });
+  }
+  return sharedDirectDispatcher;
+}
+
+function isConnectOrDnsFailure(error: unknown): { matched: boolean; code: string | null } {
+  const cause = (error as { cause?: { code?: string; name?: string; message?: string } })?.cause;
+  const code = cause?.code ?? cause?.name ?? null;
+  const combined = `${code ?? ""} ${cause?.message ?? ""} ${(error as Error)?.message ?? ""}`;
+  if (
+    /UND_ERR_CONNECT_TIMEOUT|ConnectTimeoutError|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|CERT_|ERR_TLS/i.test(
+      combined,
+    )
+  ) {
+    return { matched: true, code };
+  }
+  return { matched: false, code };
 }
 
 function shouldShrinkTokenBudget(status: number, detail: string): boolean {
@@ -307,8 +398,9 @@ export async function callAiChatCompletion(
   }
 
   const baseUrl = resolveEffectiveBaseUrl(apiKey);
-  const model = resolveEffectiveModel(params.model, { baseUrl, apiKey });
-  const fetchFn = options?.fetchImpl ?? fetch;
+  const proxyUrl = resolveAiProxyUrl();
+  let currentModel = resolveEffectiveModel(params.model, { baseUrl, apiKey });
+  const customFetch = options?.fetchImpl ?? null;
   const retryBaseMs = options?.retryBaseDelayMs ?? 2_000;
   const requestTimeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const maxRetries = options?.maxRetries ?? MAX_RETRIES;
@@ -316,19 +408,24 @@ export async function callAiChatCompletion(
   let useJsonObjectFormat = true;
   let useMaxCompletionTokens = false;
   let includeTemperature = true;
+  let reasoningEffort = defaultReasoningEffortForModel(currentModel);
   let effectiveMaxTokens = params.maxTokens;
   let effectiveUserPrompt = params.userPrompt;
+  let didTimeoutFallback = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const attemptTimeoutMs = didTimeoutFallback
+      ? Math.min(requestTimeoutMs, FAST_FALLBACK_TIMEOUT_MS)
+      : requestTimeoutMs;
     const controller = new AbortController();
 
     const timer = setTimeout(() => {
       controller.abort();
-    }, requestTimeoutMs);
+    }, attemptTimeoutMs);
 
     try {
       const requestBody: Record<string, unknown> = {
-        model,
+        model: currentModel,
         messages: [
           {
             role: "system",
@@ -349,27 +446,48 @@ export async function callAiChatCompletion(
       } else {
         requestBody.max_tokens = effectiveMaxTokens;
       }
+      if (reasoningEffort) {
+        requestBody.reasoning_effort = reasoningEffort;
+      }
       if (useJsonObjectFormat) {
         requestBody.response_format = { type: "json_object" };
       }
 
-      const response = await fetchFn(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-        cache: "no-store",
-      });
+      const targetUrl = `${baseUrl}/chat/completions`;
+      const headers = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      };
+      const bodyJson = JSON.stringify(requestBody);
+
+      const response: Response = customFetch
+        ? await customFetch(targetUrl, {
+            method: "POST",
+            headers,
+            body: bodyJson,
+            signal: controller.signal,
+            cache: "no-store",
+          })
+        : ((await undiciFetch(targetUrl, {
+            method: "POST",
+            headers,
+            body: bodyJson,
+            signal: controller.signal,
+            dispatcher: getAiDispatcher(proxyUrl),
+          })) as unknown as Response);
 
       clearTimeout(timer);
 
       if (!response.ok) {
         const rawErr = await response.text().catch(() => "");
-        const safeDetail = sanitizeSecrets(rawErr, apiKey);
+        const safeDetail = sanitizeSecrets(rawErr, apiKey, proxyUrl);
         const conciseReason = extractProviderErrorReason(safeDetail);
+
+        // 0) Drop `reasoning_effort` if the OpenAI-compatible gateway does not recognize it
+        if (reasoningEffort && shouldDropReasoningEffort(response.status, safeDetail) && attempt < maxRetries) {
+          reasoningEffort = null;
+          continue;
+        }
 
         // 1) Reasoning-model compatibility: switch max_tokens -> max_completion_tokens / drop custom temperature
         if (!useMaxCompletionTokens && shouldSwitchToMaxCompletionTokens(response.status, safeDetail) && attempt < maxRetries) {
@@ -385,7 +503,7 @@ export async function callAiChatCompletion(
         // 2) Fallback once if the upstream model rejects `response_format: { type: "json_object" }`
         if (useJsonObjectFormat && shouldDropJsonObjectFormat(response.status, safeDetail) && attempt < maxRetries) {
           useJsonObjectFormat = false;
-          console.warn(`[ai] Model "${model}" rejected json_object response_format (HTTP ${response.status}); retrying without it.`);
+          console.warn(`[ai] Model "${currentModel}" rejected json_object response_format (HTTP ${response.status}); retrying without it.`);
           continue;
         }
 
@@ -399,7 +517,7 @@ export async function callAiChatCompletion(
           if (effectiveUserPrompt.length > 4_000) {
             effectiveUserPrompt = `${effectiveUserPrompt.slice(0, 4_000)}\n[...]`;
           }
-          console.warn(`[ai] Shrinking max_tokens to ${FALLBACK_COMPACT_MAX_TOKENS} after HTTP ${response.status} for model "${model}".`);
+          console.warn(`[ai] Shrinking max_tokens to ${FALLBACK_COMPACT_MAX_TOKENS} after HTTP ${response.status} for model "${currentModel}".`);
           continue;
         }
 
@@ -411,7 +529,7 @@ export async function callAiChatCompletion(
           const waitMs = (providerWaitMs ?? fallbackBackoffMs) + (response.status === 429 ? RATE_LIMIT_BUFFER_MS : 0);
 
           console.warn(
-            `[ai] Upstream HTTP ${response.status} for model "${model}". Retrying in ${waitMs}ms ` +
+            `[ai] Upstream HTTP ${response.status} for model "${currentModel}". Retrying in ${waitMs}ms ` +
               `(attempt ${attempt + 1}/${maxRetries}).`,
           );
 
@@ -422,7 +540,7 @@ export async function callAiChatCompletion(
         return {
           ok: false,
           kind: "http_error",
-          message: describeHttpStatusFa(response.status, model),
+          message: describeHttpStatusFa(response.status, currentModel),
           detail: conciseReason ?? (safeDetail || null),
         };
       }
@@ -434,7 +552,7 @@ export async function callAiChatCompletion(
         return {
           ok: false,
           kind: "api_error",
-          message: `پاسخ خالی از مدل «${model}» دریافت شد.`,
+          message: `پاسخ خالی از مدل «${currentModel}» دریافت شد.`,
           detail: payload?.choices?.[0]?.finish_reason
             ? `finish_reason: ${String(payload.choices[0].finish_reason)}`
             : null,
@@ -444,15 +562,44 @@ export async function callAiChatCompletion(
       return {
         ok: true,
         rawText: rawContent,
-        model,
+        model: currentModel,
         usage: extractTokenUsage(payload?.usage),
       };
     } catch (error) {
       clearTimeout(timer);
 
+      const connectFail = isConnectOrDnsFailure(error);
+      if (connectFail.matched) {
+        const rawErrMsg = error instanceof Error ? sanitizeSecrets(error.message, apiKey, proxyUrl) : "";
+        return {
+          ok: false,
+          kind: "network_error",
+          message: `اتصال شبکه/TLS به «${baseUrl}» (مدل «${currentModel}») برقرار نشد؛ احتمال مسدود بودن IP سرور یا نادرست بودن آدرس وجود دارد (در صورت نیاز AI_API_BASE_URL یا AI_PROXY_URL تنظیم کنید).`,
+          detail: [connectFail.code, rawErrMsg].filter(Boolean).join(" — ") || null,
+        };
+      }
+
       const aborted =
         error instanceof Error &&
         (error.name === "AbortError" || error.name === "TimeoutError");
+
+      // Fast compact retry once when TCP connected fine, so slow thinking models
+      // (e.g. Gemini 2.5 Flash) recover on a lighter payload / non-thinking model.
+      if (aborted && !didTimeoutFallback && attempt < maxRetries) {
+        didTimeoutFallback = true;
+        reasoningEffort = null;
+        effectiveMaxTokens = Math.min(effectiveMaxTokens, FALLBACK_COMPACT_MAX_TOKENS);
+        if (effectiveUserPrompt.length > 2_800) {
+          effectiveUserPrompt = `${effectiveUserPrompt.slice(0, 2_800)}\n[...]`;
+        }
+        if (/generativelanguage\.googleapis\.com/i.test(baseUrl) && /^gemini-2\.5-/i.test(currentModel)) {
+          currentModel = FAST_FALLBACK_GEMINI_MODEL;
+        }
+        console.warn(
+          `[ai] Request timed out after ${attemptTimeoutMs}ms; retrying once with compact payload on model "${currentModel}".`,
+        );
+        continue;
+      }
 
       if (!aborted && attempt < 1) {
         await sleep(retryBaseMs);
@@ -463,11 +610,11 @@ export async function callAiChatCompletion(
         ok: false,
         kind: aborted ? "timeout" : "network_error",
         message: aborted
-          ? `زمان درخواست هوش مصنوعی به پایان رسید (${requestTimeoutMs}ms).`
-          : `خطای شبکه در اتصال به سرویس هوش مصنوعی (${baseUrl}).`,
+          ? `زمان درخواست هوش مصنوعی به پایان رسید (${attemptTimeoutMs}ms — مدل «${currentModel}» در «${baseUrl}»).`
+          : `خطای شبکه در اتصال به سرویس هوش مصنوعی (${currentModel} @ ${baseUrl}).`,
         detail:
           error instanceof Error
-            ? sanitizeSecrets(error.message, apiKey)
+            ? sanitizeSecrets(error.message, apiKey, proxyUrl)
             : null,
       };
     }

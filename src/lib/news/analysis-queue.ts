@@ -18,7 +18,7 @@ import { analyzeArticle } from "./analyze";
 import { evaluateTopicFilter, isTopicGateActive } from "./topic-filter";
 
 export const STALE_PROCESSING_MINUTES = 2;
-const DEFAULT_PASS_BUDGET_MS = 55_000;
+const DEFAULT_PASS_BUDGET_MS = 65_000;
 const SWEEP_BATCH_LIMIT = 250;
 
 export type QueuedAnalysisResult = {
@@ -177,7 +177,7 @@ export async function selectAnalysisBacklog(limit: number, excludeIds: string[] 
 }
 
 function isFatalProviderConfigFailure(code: string | null, detail: string | null): boolean {
-  if (code === "missing_key") return true;
+  if (code === "missing_key" || code === "timeout" || code === "network_error") return true;
   if (code === "http_error" && detail) {
     return /^HTTP\s+(401|402|403|404)\b/i.test(detail.trim());
   }

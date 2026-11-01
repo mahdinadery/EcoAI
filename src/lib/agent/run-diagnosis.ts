@@ -97,13 +97,23 @@ export function diagnoseRunSummary(summary: RunSummaryLike | null | undefined): 
 
   if (analysis && count(analysis.failed) > 0 && count(analysis.analyzed) === 0) {
     const firstError = summary.errors?.find((line) => line.trim().length > 0)?.trim();
+    const isTimeoutOrNet = firstError
+      ? /زمان درخواست|به پایان رسید|aborted|شبکه|TLS|برقرار نشد/i.test(firstError)
+      : false;
     return {
       level: "error",
       title: "تحلیل هوش مصنوعی انجام نشد؛ خبری برای ارسال آماده نشد.",
       hints: [
         ...(firstError ? [`علت دقیق ثبت‌شده: ${firstError}`] : []),
-        "AI_API_KEY و در صورت نیاز AI_API_BASE_URL / AI_API_MODEL را در میزبان بررسی کنید.",
-        "از صفحه «پیکربندی AI» یک خبر را دستی تحلیل کنید تا متن خطا را ببینید.",
+        ...(isTimeoutOrNet
+          ? [
+              "روی دکمهٔ «تست اتصال AI» در بالای همین کارت کلیک کنید تا مدل، آدرس سرویس (Base URL) و پینگ شبکه را در چند ثانیه بررسی کنید.",
+              "اگر سرور داخل ایران است یا سرویس مستقیماً در دسترس نیست، `AI_API_BASE_URL` (درگاه واسط سازگار با OpenAI) یا `AI_PROXY_URL` را تنظیم کنید.",
+            ]
+          : [
+              "AI_API_KEY و در صورت نیاز AI_API_BASE_URL / AI_API_MODEL را در میزبان بررسی کنید.",
+              "از دکمهٔ «تست اتصال AI» یا صفحه «پیکربندی AI» وضعیت اتصال را بررسی کنید.",
+            ]),
       ],
     };
   }

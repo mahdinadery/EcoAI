@@ -20,7 +20,7 @@ export { composeArticleTextForAi, extractArticleTextFromHtml, shouldFetchFullArt
 const ARTICLE_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-const DEFAULT_ARTICLE_TIMEOUT_MS = 8_000;
+const DEFAULT_ARTICLE_TIMEOUT_MS = 6_000;
 const MAX_HTML_BYTES = 2_500_000;
 
 /**

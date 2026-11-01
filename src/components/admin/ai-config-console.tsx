@@ -25,7 +25,7 @@ import { BulletinConfigPanel } from "./bulletin-config-panel";
 import { KeywordListEditor } from "./keyword-list-editor";
 import { BASELINE_BLOCKED_KEYWORDS } from "@/lib/news/topic-filter";
 import { PUBLISHING_TEMPLATE_VARS, findUnknownTemplateVars } from "@/lib/delivery/template";
-import { ENGLISH_ECONOMICS_PACK } from "@/lib/news/news-packs";
+import { AI_ECONOMICS_PACK } from "@/lib/news/news-packs";
 import { TOPIC_PRESETS } from "@/lib/news/topic-filter";
 import { AiConfigFeatureRow } from "./ai-config-feature-row";
 import { AiConfigOutputFieldRow } from "./ai-config-output-field-row";
@@ -36,15 +36,15 @@ import { AiConfigTopicRow } from "./ai-config-topic-row";
 import { AiConfigVersionHistory } from "./ai-config-version-history";
 
 /**
- * Quick-add presets plus the English analytical economics domain topics.
+ * Quick-add presets plus The Economics of AI domain topics.
  */
 const ALL_TOPIC_PRESETS = [
   ...TOPIC_PRESETS,
-  ...ENGLISH_ECONOMICS_PACK.topics.map((topic) => ({ label: topic.label, keywords: [...topic.keywords] })),
+  ...AI_ECONOMICS_PACK.topics.map((topic) => ({ label: topic.label, keywords: [...topic.keywords] })),
 ];
 
 /**
- * Starter deny-list keywords: off-topic noise an economics channel never wants.
+ * Starter deny-list keywords: off-topic noise an Economics-of-AI channel never wants.
  * They apply in BOTH filter modes, before the AI stage.
  */
 const BLOCKED_KEYWORD_PRESETS = [
@@ -54,6 +54,7 @@ const BLOCKED_KEYWORD_PRESETS = [
   "celebrity gossip",
   "horoscope",
   "movie review",
+  "video game walkthrough",
   "ورزش",
   "فوتبال",
   "سرگرمی",
@@ -69,7 +70,7 @@ type Props = { adminKey: string };
 const LOCKED_FEATURES: AiFeatureKey[] = ["summary", "shouldSend"];
 
 /**
- * One-click analyst presets for English economic articles & Persian translation.
+ * One-click analyst presets tailored for The Economics of AI (`اقتصاد هوش مصنوعی`).
  */
 const ANALYST_PRESETS: Array<{
   key: string;
@@ -80,30 +81,30 @@ const ANALYST_PRESETS: Array<{
   minRelevance: number;
 }> = [
   {
-    key: "analytical-econ",
-    label: "مترجم و تحلیلگر مقالات اقتصادی (پیش‌فرض)",
+    key: "ai-economics-comprehensive",
+    label: "اقتصاددان هوش مصنوعی — جامع (پیش‌فرض)",
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     audienceFocus: DEFAULT_AUDIENCE_FOCUS,
     minImportance: 65,
     minRelevance: 70,
   },
   {
-    key: "central-banks-macro",
-    label: "تحلیلگر اقتصاد کلان و بانک‌های مرکزی",
+    key: "ai-capex-compute-markets",
+    label: "تحلیلگر سرمایه‌گذاری، تراشه، زیرساخت و بازار AI",
     systemPrompt:
-      "تو یک اقتصاددان کلان و مترجم تخصصی مقالات بانک‌های مرکزی (Fed، ECB، IMF، BIS) هستی. هر مقالهٔ انگلیسی را با تمرکز بر نرخ بهره، تورم، سیاست پولی، پایداری بدهی دولت و چرخه‌های تجاری به فارسی روان ترجمه و خلاصه کن. عنوان را دقیق ترجمه کن و فقط مقالات دارای استدلال و شواهد تحلیلی قوی را برای ارسال به کانال بله توصیه کن.",
+      "تو یک تحلیلگر ارشد اقتصاد صنعتی و سرمایه‌گذاری در «اقتصاد هوش مصنوعی» هستی. مقالات انگلیسی را با تمرکز بر مخارج سرمایه‌ای (CapEx) غول‌های فناوری، زنجیرهٔ تأمین تراشه و GPU (انویدیا، TSMC، ASML)، هزینهٔ آموزش و استنتاج مدل‌ها، تقاضای برق دیتاسنترها، ارزش‌گذاری استارتاپ‌های AI، قیمت‌گذاری API، بازده سرمایه‌گذاری (ROI) و ضدانحصار تحلیل، خلاصه و به فارسی سلیس ترجمه کن.",
     audienceFocus:
-      "مخاطب، اقتصاددانان کلان، پژوهشگران پولی-بانکی و سیاست‌گذاران هستند. مطالب مرتبط: سیاست پولی، نرخ بهره، تورم، سیاست مالی، کسری بودجه، رشد اقتصادی و یادداشت‌های پژوهشی بانک‌های مرکزی. اخبار کوتاه روزمره بدون تحلیل، ورزشی و سرگرمی بی‌ربط‌اند.",
+      "مخاطب، سرمایه‌گذاران فناوری، تحلیلگران بازار سرمایه و مدیران راهبردی هوش مصنوعی هستند. مطالب مرتبط: اقتصاد محاسبات و تراشه، CapEx دیتاسنتر و انرژی، ارزش‌گذاری و مدل‌های درآمدی AI، اقتصاد واحد (Unit Economics)، رقابت و ضدانحصار در اکوسیستم هوش مصنوعی. اخبار عمومی غیردیجیتال و آموزش‌های کدنویسی بی‌ربط‌اند.",
     minImportance: 65,
     minRelevance: 70,
   },
   {
-    key: "global-trade-markets",
-    label: "تحلیلگر تجارت جهانی، انرژی و بازارها",
+    key: "ai-labor-productivity-policy",
+    label: "پژوهشگر بهره‌وری، بازار کار و سیاست‌گذاری AI",
     systemPrompt:
-      "تو یک تحلیلگر اقتصاد بین‌الملل، ژئواکونومیک و بازارهای مالی جهانی هستی. مقالات انگلیسی را با تمرکز بر تجارت جهانی، تعرفه‌ها، زنجیرهٔ تأمین، بازارهای انرژی و کالا، جریان سرمایه و ثبات مالی تحلیل، خلاصه و به فارسی سلیس ترجمه کن و پیامدهای راهبردی هر مقاله را روشن بنویس.",
+      "تو یک اقتصاددان کلان و بازار کارِ متخصص در «اقتصاد هوش مصنوعی» (هم‌راستا با پژوهش‌های NBER، بروکینگز، IMF و اقتصاددانانی چون عجم‌اوغلو و برینجولفسون) هستی. مقالات انگلیسی را با تمرکز بر اثر AI بر بهره‌وری کل عوامل، رشد اقتصادی، جایگزینی یا مکمل‌سازی مشاغل، نابرابری دستمزد، سرمایهٔ انسانی، مقررات هوش مصنوعی و ژئواکونومیک فناوری تحلیل و به فارسی علمی و روان ترجمه کن.",
     audienceFocus:
-      "مخاطب، تحلیلگران اقتصاد بین‌الملل، تجارت خارجی، انرژی و بازارهای مالی جهانی هستند. مطالب مرتبط: تعرفه‌ها و سیاست صنعتی، زنجیرهٔ تأمین جهانی، تحریم‌ها و ژئواکونومیک، بازار نفت/گاز/کالا، بازار اوراق و ارزهای جهانی. اخبار زرد، ورزشی و سرگرمی بی‌ربط‌اند.",
+      "مخاطب، اقتصاددانان کلان، پژوهشگران بازار کار و سیاست‌گذاران فناوری هستند. مطالب مرتبط: بهره‌وری و رشد ناشی از AI، اتوماسیون وظایف و آیندهٔ کار، توزیع درآمد، مالیات و مقررات هوش مصنوعی (AI Act)، حاکمیت ملی AI و کنترل صادرات فناوری. اخبار روزمرهٔ بدون پیوند با اقتصاد هوش مصنوعی بی‌ربط‌اند.",
     minImportance: 65,
     minRelevance: 70,
   },
@@ -475,10 +476,9 @@ export function AiConfigConsole({ adminKey }: Props) {
         <div className="mt-5">
           <h3 className="text-sm font-bold text-ink">تمرکز مخاطب (ملاک امتیاز مرتبط بودن)</h3>
           <p className="mt-1 text-xs leading-5 text-muted">
-            مشخص کنید چه نوع مقالات و تحلیل‌هایی «مرتبط» محسوب می‌شوند. اگر خالی بماند، تعریف پیش‌فرض استفاده می‌شود:
-            مخاطب هدف، <b>اقتصاددانان، پژوهشگران و تحلیلگران بازار</b> هستند و مقالات تحلیلی اقتصادی انگلیسی در اولویت
-            قرار دارند. این متن همراه قوانین قطعی («مطلب غیراقتصادی باید relevance زیر ۳۰ بگیرد، حتی اگر مهم باشد») به
-            همهٔ درخواست‌های تحلیل اضافه می‌شود.
+            مشخص کنید چه نوع مقالاتی «مرتبط» محسوب می‌شوند. اگر خالی بماند، تعریف پیش‌فرض استفاده می‌شود: حوزهٔ اصلی کانال{" "}
+            <b>اقتصاد هوش مصنوعی (The Economics of AI)</b> است و تنها مقالاتی که تلاقی هوش مصنوعی با اقتصاد، بهره‌وری،
+            بازار کار، تراشه/انرژی/زیرساخت، سرمایه‌گذاری یا سیاست‌گذاری را تحلیل می‌کنند مرتبط‌اند.
           </p>
           <textarea
             className="mt-2 w-full resize-y rounded-xl border border-line px-3 py-2.5 text-sm leading-6 text-ink-soft focus:border-accent focus:outline-none"

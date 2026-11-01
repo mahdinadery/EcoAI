@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { StatusBadge } from "@/components/status-badge";
-import { ENGLISH_ECONOMICS_PACK } from "@/lib/news/news-packs";
+import { AI_ECONOMICS_PACK } from "@/lib/news/news-packs";
 import { SchemaRepairCard } from "./schema-repair-card";
 
 type Health = "healthy" | "warning" | "failed" | "paused";
@@ -116,18 +116,19 @@ const HEALTH_TONE: Record<Health, "success" | "warning" | "danger" | "muted"> = 
 };
 
 /**
- * Curated English analytical economic & research RSS feeds. One click fills
- * the add-source form; the operator can test and edit before saving.
+ * Curated English RSS feeds for The Economics of AI (`اقتصاد هوش مصنوعی`).
+ * One click fills the add-source form; the operator can test and edit before saving.
  */
 const PRESET_SOURCES: Array<{ name: string; url: string; category: string; note: string }> = [
-  { name: "Project Syndicate — Economics", url: "https://www.project-syndicate.org/rss/section/economics", category: "مقالات تحلیلی اقتصاد", note: "یادداشت‌های اقتصاددانان برجسته و برندگان نوبل اقتصاد" },
-  { name: "VoxEU / CEPR", url: "https://cepr.org/rss/voxeu", category: "پژوهش اقتصادی", note: "مقالات تحلیلی مبتنی بر پژوهش‌های روز اقتصاددانان" },
-  { name: "IMF Blog — صندوق بین‌المللی پول", url: "https://www.imf.org/en/Blogs/rss", category: "نهادهای بین‌المللی", note: "تحلیل‌های اقتصاد کلان جهانی و ثبات مالی" },
-  { name: "Brookings — Economy", url: "https://www.brookings.edu/topic/economy/feed/", category: "اندیشکده اقتصادی", note: "مقالات سیاست پولی، مالی و اقتصاد جهانی" },
-  { name: "Peterson Institute (PIIE)", url: "https://www.piie.com/rss.xml", category: "تجارت و اقتصاد بین‌الملل", note: "تجارت جهانی، تعرفه‌ها، ارز و ژئواکونومیک" },
-  { name: "The Economist — Finance & Economics", url: "https://www.economist.com/finance-and-economics/rss.xml", category: "تحلیل مالی و اقتصادی", note: "گزارش‌ها و تحلیل‌های مالی و اقتصادی اکونومیست" },
-  { name: "Federal Reserve — FEDS Notes", url: "https://www.federalreserve.gov/feeds/feds_notes.xml", category: "بانک مرکزی و سیاست پولی", note: "یادداشت‌های پژوهشی اقتصاددانان فدرال رزرو" },
-  { name: "World Bank Blogs — بانک جهانی", url: "https://blogs.worldbank.org/en/rss.xml", category: "اقتصاد توسعه", note: "پژوهش‌های اقتصاد توسعه و بازارهای نوظهور" },
+  { name: "MIT Technology Review — AI", url: "https://www.technologyreview.com/topic/artificial-intelligence/feed", category: "اقتصاد و فناوری AI", note: "گزارش‌های عمیق هزینهٔ محاسبات، پذیرش سازمانی و اقتصاد هوش مصنوعی" },
+  { name: "Brookings — Artificial Intelligence", url: "https://www.brookings.edu/topic/artificial-intelligence/feed/", category: "پژوهش اقتصاد و سیاست AI", note: "پژوهش‌های بازار کار، بهره‌وری، رقابت و حکمرانی هوش مصنوعی" },
+  { name: "NBER — New Working Papers", url: "https://back.nber.org/rss/new.xml", category: "مقالات پژوهشی NBER", note: "جدیدترین مقالات کاری اقتصاددانان دربارهٔ اقتصاد AI، اتوماسیون و رشد" },
+  { name: "Project Syndicate — Economics", url: "https://www.project-syndicate.org/rss/section/economics", category: "دیدگاه اقتصاددانان", note: "یادداشت‌های عجم‌اوغلو، برینجولفسون و اسپنس دربارهٔ اقتصاد هوش مصنوعی" },
+  { name: "VoxEU / CEPR", url: "https://cepr.org/rss/voxeu", category: "پژوهش تجربی اقتصاد", note: "ستون‌های پژوهشی اقتصاددانان دربارهٔ AI، بهره‌وری و اشتغال" },
+  { name: "IMF Blog", url: "https://www.imf.org/en/Blogs/rss", category: "نهادهای بین‌المللی", note: "تحلیل‌های صندوق بین‌المللی پول دربارهٔ هوش مصنوعی و اقتصاد جهانی" },
+  { name: "Ars Technica — AI", url: "https://feeds.arstechnica.com/arstechnica/ai", category: "زیرساخت و بازار AI", note: "اقتصاد GPU و دیتاسنتر، انرژی، کپی‌رایت و رقابت در صنعت AI" },
+  { name: "OpenAI News", url: "https://openai.com/news/rss.xml", category: "گزارش‌های آزمایشگاه‌های AI", note: "گزارش‌های اقتصادی، پذیرش سازمانی و قیمت‌گذاری مدل‌ها" },
+  { name: "Peterson Institute (PIIE)", url: "https://www.piie.com/rss.xml", category: "ژئواکونومیک فناوری", note: "کنترل صادرات تراشه، سیاست صنعتی و تجارت دیجیتال" },
 ];
 
 const emptyForm = (): FormState => ({
@@ -409,7 +410,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({
-          packId: ENGLISH_ECONOMICS_PACK.id,
+          packId: AI_ECONOMICS_PACK.id,
           applyTopics: packTopics,
           applySources: packSources,
           applyAudienceNote: packAudience,
@@ -494,15 +495,15 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
       <section className="rounded-2xl border border-ok-line bg-ok-soft/40 p-4 sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold text-ink">{ENGLISH_ECONOMICS_PACK.title}</h2>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">{ENGLISH_ECONOMICS_PACK.description}</p>
+            <h2 className="text-base font-bold text-ink">{AI_ECONOMICS_PACK.title}</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">{AI_ECONOMICS_PACK.description}</p>
           </div>
           <div className="flex shrink-0 gap-2 text-xs">
             <span className="rounded-full bg-surface px-3 py-1 font-semibold text-ok-ink">
-              {ENGLISH_ECONOMICS_PACK.topics.length} موضوع
+              {AI_ECONOMICS_PACK.topics.length} محور تخصصی
             </span>
             <span className="rounded-full bg-surface px-3 py-1 font-semibold text-ok-ink">
-              {ENGLISH_ECONOMICS_PACK.sources.length} منبع انگلیسی
+              {AI_ECONOMICS_PACK.sources.length} منبع انگلیسی
             </span>
           </div>
         </div>
@@ -515,7 +516,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackTopics(event.target.checked)}
               type="checkbox"
             />
-            افزودن موضوعات اقتصادی انگلیسی و فعال‌سازی فیلتر تمرکز
+            افزودن محورهای «اقتصاد هوش مصنوعی» و فعال‌سازی فیلتر تمرکز
           </label>
           <label className="inline-flex cursor-pointer items-center gap-2">
             <input
@@ -524,7 +525,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackSources(event.target.checked)}
               type="checkbox"
             />
-            افزودن فیدهای مقالات اقتصادی انگلیسی (هر منبع قبل از ثبت تست می‌شود)
+            افزودن فیدهای تخصصی اقتصاد هوش مصنوعی (هر منبع قبل از ثبت تست می‌شود)
           </label>
           <label className="inline-flex cursor-pointer items-center gap-2">
             <input
@@ -533,7 +534,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
               onChange={(event) => setPackAudience(event.target.checked)}
               type="checkbox"
             />
-            افزودن زمینه «مقالات تحلیلی اقتصادی و ترجمه فارسی» به پرامپت
+            افزودن زمینه «کانال تخصصی اقتصاد هوش مصنوعی (The Economics of AI)» به پرامپت
           </label>
         </div>
 
@@ -544,7 +545,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
             onClick={handleApplyPack}
             type="button"
           >
-            {packBusy ? "در حال اعمال و تست منابع…" : "اعمال بسته مقالات اقتصادی انگلیسی"}
+            {packBusy ? "در حال اعمال و تست منابع…" : "اعمال بسته اقتصاد هوش مصنوعی (The Economics of AI)"}
           </button>
           <span className="text-[11px] text-ok-ink/70">
             موضوعات روی نسخه فعال پیکربندی AI اعمال می‌شوند (نسخه قبلی در تاریخچه می‌ماند).
@@ -708,7 +709,7 @@ export function NewsSourcesConsole({ adminKey }: { adminKey: string }) {
 
       {!form ? (
         <section className="rounded-2xl border border-ok-line bg-ok-soft/40 p-4">
-          <h2 className="text-sm font-bold text-ink">منابع پیشنهادی مقالات و تحلیل‌های اقتصادی انگلیسی</h2>
+          <h2 className="text-sm font-bold text-ink">منابع پیشنهادی حوزهٔ اقتصاد هوش مصنوعی (The Economics of AI)</h2>
           <p className="mt-1 text-xs leading-5 text-muted">
             یک منبع را انتخاب کنید تا فرم افزودن با مشخصات آن پر شود؛ قبل از ذخیره حتماً «تست اتصال» را بزنید.
           </p>

@@ -176,12 +176,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <AdminKeyQuerySync adminKey={adminKey} />
             <header className="flex flex-col gap-5 border-b border-line/80 pb-7 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="mb-3 text-sm font-medium text-accent-ink">مرکز کنترل اخبار</p>
+                <p className="mb-3 text-sm font-medium text-accent-ink">مرکز کنترل EcoAI — The Economics of AI</p>
                 <h1 className="text-2xl font-bold tracking-tight text-ink sm:text-3xl">
-                  دستیار هوشمند اخبار
+                  دستیار هوشمند اقتصاد هوش مصنوعی
                 </h1>
                 <p className="mt-2 text-sm text-muted sm:text-base">
-                  مدیریت دریافت، تحلیل و ارسال اخبار
+                  دریافت مقالات انگلیسی اقتصاد هوش مصنوعی، ترجمه و تحلیل تخصصی فارسی و انتشار در پیام‌رسان بله
                 </p>
               </div>
 

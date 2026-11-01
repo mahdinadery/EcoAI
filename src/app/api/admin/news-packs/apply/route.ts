@@ -9,6 +9,7 @@ import {
 import type { AiConfigInput } from "@/lib/ai/config-types";
 import {
   appendAudienceNote,
+  DEFAULT_NEWS_PACK,
   getNewsPack,
   mergeBlockedKeywords,
   mergePackTopics,
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
     body = {};
   }
 
-  const packId = (body.packId ?? "").trim();
+  const packId = (body.packId ?? "").trim() || DEFAULT_NEWS_PACK.id;
   const pack = getNewsPack(packId);
   if (!pack) {
     return Response.json(
@@ -143,6 +144,7 @@ export async function POST(request: Request) {
           provider: active.provider,
           model: active.model,
           systemPrompt: audience.prompt,
+          audienceFocus: active.audienceFocus,
           temperature: active.temperature,
           maxTokens: active.maxTokens,
           features: active.features,
@@ -151,6 +153,7 @@ export async function POST(request: Request) {
           publishingTemplate: active.publishingTemplate,
           topicFilter: applyTopics
             ? {
+                baselineBlockedKeywords: active.topicFilter?.baselineBlockedKeywords,
                 enabled: true,
                 mode: "include",
                 topics: merged.topics,

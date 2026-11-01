@@ -10,7 +10,13 @@ import {
   extractArticleTextFromHtml,
   shouldFetchFullArticleText,
 } from "../src/lib/news/article-extractor-core.ts";
-import { DEFAULT_OUTPUT_SCHEMA, DEFAULT_PUBLISHING_TEMPLATE } from "../src/lib/ai/config-types.ts";
+import {
+  DEFAULT_OUTPUT_SCHEMA,
+  DEFAULT_PUBLISHING_TEMPLATE,
+  DEFAULT_SYSTEM_PROMPT,
+  LEGACY_GENERAL_ECON_SYSTEM_PROMPT,
+  upgradeLegacySystemPrompt,
+} from "../src/lib/ai/config-types.ts";
 import { buildNewsMessage, formatBilingualTitle } from "../src/lib/delivery/message.ts";
 import { buildBulletinMessage } from "../src/lib/delivery/bulletin.ts";
 import { similarityKeyOf } from "../src/lib/news/corroboration.ts";
@@ -215,4 +221,14 @@ test("similarityKeyOf groups paraphrased English economic headlines across outle
 test("db-ensure includes additive translated_title columns on news and ai_analyses", () => {
   assert.ok(STEPS.some((s) => s.name === "column news.translated_title" && s.sql.includes("IF NOT EXISTS")));
   assert.ok(STEPS.some((s) => s.name === "column ai_analyses.translated_title" && s.sql.includes("IF NOT EXISTS")));
+});
+
+test("upgradeLegacySystemPrompt auto-upgrades untouched Version 1 prompts to Economics of AI while preserving custom edits", () => {
+  assert.equal(upgradeLegacySystemPrompt(LEGACY_GENERAL_ECON_SYSTEM_PROMPT), DEFAULT_SYSTEM_PROMPT);
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("اقتصاد هوش مصنوعی"));
+  assert.ok(DEFAULT_SYSTEM_PROMPT.includes("The Economics of AI"));
+  assert.equal(
+    upgradeLegacySystemPrompt("پرامپت سفارشی اپراتور برای تحلیل خاص"),
+    "پرامپت سفارشی اپراتور برای تحلیل خاص",
+  );
 });

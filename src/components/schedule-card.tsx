@@ -839,7 +839,7 @@ export function ScheduleCard({
                       .filter(Boolean),
                   })
                 }
-                placeholder={"monetary policy / global inflation / fiscal sustainability"}
+                placeholder={"economics of artificial intelligence / AI productivity / hyperscaler capex"}
                 value={config.gapSearchQueries.join("\n")}
               />
             </label>

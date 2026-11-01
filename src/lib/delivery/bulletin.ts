@@ -62,7 +62,7 @@ export const DEFAULT_BULLETIN_SETTINGS: BulletinSettings = {
   showSources: true,
   aiIntro: true,
   introPrompt:
-    "تو سردبیر یک بولتن تخصصی مقالات و تحلیل‌های اقتصاد جهان هستی. یک جمع‌بندی فارسی روان ۲ تا ۴ جمله‌ای از مقالات داده‌شده و پیامد مستندشان برای سیاست‌گذاری اقتصادی و بازارهای جهانی بنویس. ارتباط حدسی نساز. فقط متن جمع‌بندی فارسی، بدون عنوان یا فهرست یا Markdown.",
+    "تو سردبیر یک بولتن تخصصی در حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) هستی. یک جمع‌بندی فارسی روان ۲ تا ۴ جمله‌ای از مقالات داده‌شده و پیامد مستندشان برای بهره‌وری، بازار کار، سرمایه‌گذاری زیرساختی و اقتصاد هوش مصنوعی بنویس. ارتباط حدسی نساز. فقط متن جمع‌بندی فارسی، بدون عنوان یا فهرست یا Markdown.",
   introMaxTokens: 400,
 };
 export function resolveBulletinSettings(value?: Partial<BulletinSettings>): BulletinSettings {

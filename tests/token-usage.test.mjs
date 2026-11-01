@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractTokenUsage, mergeTokenUsage } from "../src/lib/ai/completion.ts";
+import {
+  callAiChatCompletion,
+  extractProviderErrorReason,
+  extractTokenUsage,
+  mergeTokenUsage,
+  normalizeAiBaseUrl,
+} from "../src/lib/ai/completion.ts";
 import { STEPS } from "../scripts/db-ensure.mjs";
 
 test("extractTokenUsage: parses OpenAI-compatible usage payload", () => {
@@ -62,5 +68,125 @@ test("db-ensure: includes ai_analyses token columns", () => {
 test('db ensure adds independent hashtag columns without replacing existing data', () => {
   for (const name of ['column news.hashtags', 'column ai_analyses.hashtags']) {
     assert.ok(STEPS.some(step => step.name === name && step.sql.includes('IF NOT EXISTS')));
+  }
+});
+
+test("normalizeAiBaseUrl normalizes Gemini, Groq, OpenRouter shorthands and strips /chat/completions", () => {
+  assert.equal(normalizeAiBaseUrl(undefined), "https://api.openai.com/v1");
+  assert.equal(
+    normalizeAiBaseUrl("https://generativelanguage.googleapis.com/v1beta/"),
+    "https://generativelanguage.googleapis.com/v1beta/openai",
+  );
+  assert.equal(normalizeAiBaseUrl("https://api.groq.com"), "https://api.groq.com/openai/v1");
+  assert.equal(normalizeAiBaseUrl("https://openrouter.ai/api"), "https://openrouter.ai/api/v1");
+  assert.equal(
+    normalizeAiBaseUrl("https://api.groq.com/openai/v1/chat/completions"),
+    "https://api.groq.com/openai/v1",
+  );
+});
+
+test("extractProviderErrorReason parses Gemini array, OpenRouter metadata, and HTML 503 titles", () => {
+  const gemini503 = JSON.stringify([
+    { error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } },
+  ]);
+  assert.equal(extractProviderErrorReason(gemini503), "The model is overloaded. Please try again later.");
+
+  const openRouter503 = JSON.stringify({
+    error: { message: "Provider returned error", code: 503, metadata: { raw: "No instances available" } },
+  });
+  assert.equal(extractProviderErrorReason(openRouter503), "Provider returned error (No instances available)");
+
+  const html503 = "<html><head><title>503 Service Temporarily Unavailable</title></head><body></body></html>";
+  assert.equal(extractProviderErrorReason(html503), "503 Service Temporarily Unavailable");
+});
+
+test("callAiChatCompletion retries transient HTTP 503 errors and succeeds when provider recovers", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "test-secret-key";
+  let calls = 0;
+
+  try {
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "Analyze article.",
+        model: "gemini-2.5-flash",
+        temperature: 0.2,
+        maxTokens: 500,
+      },
+      {
+        retryBaseDelayMs: 5,
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls < 3) {
+            return new Response(
+              JSON.stringify([{ error: { code: 503, message: "The model is overloaded. Please try again later." } }]),
+              { status: 503 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"summary":"ترجمه موفق","shouldSend":true}' } }],
+              usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(calls, 3);
+    if (result.ok) {
+      assert.match(result.rawText, /ترجمه موفق/);
+    }
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+  }
+});
+
+test("callAiChatCompletion drops json_object response_format when rejected by upstream model", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "test-secret-key";
+  const bodies = [];
+
+  try {
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "Analyze article.",
+        model: "custom/free-model",
+        temperature: 0.2,
+        maxTokens: 500,
+      },
+      {
+        retryBaseDelayMs: 5,
+        fetchImpl: async (_url, init) => {
+          const parsedBody = JSON.parse(String(init?.body ?? "{}"));
+          bodies.push(parsedBody);
+          if (parsedBody.response_format) {
+            return new Response(
+              JSON.stringify({ error: { message: "No endpoints found that support response_format json_object" } }),
+              { status: 503 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"summary":"پاسخ بدون json_object","shouldSend":false}' } }],
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[0].response_format, { type: "json_object" });
+    assert.equal(bodies[1].response_format, undefined);
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
   }
 });

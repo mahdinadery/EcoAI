@@ -220,30 +220,73 @@ export function isTopicGateActive(filter: AiTopicFilterConfig | null | undefined
   return baselineKeywords(filter).length > 0 || isTopicFilterActive(filter);
 }
 
-/** Preset topic suggestions offered by the admin UI (bilingual English + Persian economic topics). */
+/** Preset topic suggestions offered by the admin UI for The Economics of AI (`اقتصاد هوش مصنوعی`). */
 export const TOPIC_PRESETS: Array<{ label: string; keywords: string[] }> = [
   {
-    label: "سیاست پولی و بانک‌های مرکزی",
-    keywords: ["monetary policy", "central bank", "federal reserve", "interest rate", "inflation", "ecb", "سیاست پولی"],
+    label: "بهره‌وری و اقتصاد کلان AI",
+    keywords: [
+      "economics of ai",
+      "artificial intelligence",
+      "generative ai",
+      "ai productivity",
+      "total factor productivity",
+      "economic growth",
+      "macroeconomics of ai",
+      "اقتصاد هوش مصنوعی",
+    ],
   },
   {
-    label: "اقتصاد کلان و رشد جهانی",
-    keywords: ["macroeconomics", "gdp", "economic growth", "recession", "fiscal policy", "sovereign debt", "اقتصاد کلان"],
+    label: "بازار کار، دستمزد و اتوماسیون",
+    keywords: [
+      "future of work",
+      "labor market",
+      "job displacement",
+      "task automation",
+      "augmentation",
+      "wages",
+      "white-collar",
+      "بازار کار",
+    ],
   },
   {
-    label: "تجارت جهانی و ژئواکونومیک",
-    keywords: ["international trade", "tariff", "supply chain", "geoeconomics", "sanctions", "industrial policy", "تجارت جهانی"],
+    label: "تراشه، محاسبات، دیتاسنتر و انرژی",
+    keywords: [
+      "semiconductor",
+      "gpu",
+      "nvidia",
+      "tsmc",
+      "data center",
+      "compute cost",
+      "inference cost",
+      "hyperscaler",
+      "capex",
+      "electricity demand",
+    ],
   },
   {
-    label: "بازارهای مالی و ثبات بانکی",
-    keywords: ["financial stability", "capital markets", "bond market", "yield curve", "liquidity", "banking crisis", "بازار مالی"],
+    label: "سرمایه‌گذاری، ارزش‌گذاری و کسب‌وکار AI",
+    keywords: [
+      "ai investment",
+      "ai valuation",
+      "ai bubble",
+      "venture capital",
+      "enterprise ai",
+      "api pricing",
+      "unit economics",
+      "roi",
+    ],
   },
   {
-    label: "انرژی، کالاها و اقتصاد اقلیم",
-    keywords: ["energy transition", "oil market", "commodities", "opec", "carbon tax", "critical minerals", "بازار انرژی"],
-  },
-  {
-    label: "هوش مصنوعی، بهره‌وری و بازار کار",
-    keywords: ["labor market", "productivity", "artificial intelligence", "automation", "employment", "digital economy", "بهره‌وری"],
+    label: "رقابت، مقررات و ژئواکونومیک AI",
+    keywords: [
+      "ai antitrust",
+      "ai regulation",
+      "ai act",
+      "export controls",
+      "chips act",
+      "sovereign ai",
+      "data economics",
+      "copyright",
+    ],
   },
 ];

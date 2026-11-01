@@ -118,8 +118,8 @@ export function Sidebar() {
             </svg>
           </div>
           <div>
-            <p className="text-sm font-bold text-ink">EcoAI — دستیار اقتصاد</p>
-            <p className="mt-0.5 text-xs text-faint">دریافت، ترجمه و ارسال به بله</p>
+            <p className="text-sm font-bold text-ink">EcoAI — اقتصاد هوش مصنوعی</p>
+            <p className="mt-0.5 text-xs text-faint">The Economics of AI · انتشار در بله</p>
           </div>
         </div>
 

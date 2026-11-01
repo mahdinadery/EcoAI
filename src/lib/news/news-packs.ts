@@ -12,7 +12,7 @@
  * no-op on items that already exist.
  */
 
-import type { AiTopicRule } from "../ai/config-types";
+import type { AiTopicFilterConfig, AiTopicRule } from "../ai/config-types";
 
 export type NewsPackSource = {
   name: string;
@@ -96,12 +96,14 @@ export const AI_ECONOMICS_PACK: NewsPack = {
         "generative ai",
         "economics of ai",
         "ai productivity",
-        "total factor productivity",
-        "solow paradox",
         "macroeconomics of ai",
         "ai adoption",
-        "economic growth",
-        "automation",
+        "ai-driven growth",
+        "machine learning",
+        "large language model",
+        "llm",
+        "chatgpt",
+        "solow paradox",
         "اقتصاد هوش مصنوعی",
         "بهره‌وری هوش مصنوعی",
       ],
@@ -111,17 +113,18 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       label: "بازار کار، مشاغل، دستمزد و سرمایه انسانی",
       enabled: true,
       keywords: [
-        "future of work",
-        "labor market",
-        "job displacement",
-        "task automation",
-        "augmentation",
-        "skill-biased",
-        "wage inequality",
-        "white-collar",
         "ai and jobs",
-        "workforce",
-        "human capital",
+        "ai labor",
+        "ai workforce",
+        "task automation",
+        "job displacement",
+        "automation and wages",
+        "algorithmic management",
+        "robot",
+        "robotics",
+        "copilot",
+        "agentic ai",
+        "ai agents",
         "اتوماسیون مشاغل",
         "بازار کار و هوش مصنوعی",
       ],
@@ -133,18 +136,18 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       keywords: [
         "semiconductor",
         "gpu",
+        "tpu",
         "nvidia",
         "tsmc",
         "asml",
         "data center",
+        "datacenter",
         "compute cost",
         "inference cost",
         "training cost",
         "hyperscaler",
-        "capex",
+        "ai capex",
         "ai infrastructure",
-        "electricity demand",
-        "power grid",
         "تراشه",
         "دیتاسنتر",
       ],
@@ -157,14 +160,18 @@ export const AI_ECONOMICS_PACK: NewsPack = {
         "ai investment",
         "ai valuation",
         "ai bubble",
-        "venture capital",
+        "ai startup",
         "enterprise ai",
         "ai monetization",
-        "api pricing",
-        "unit economics",
-        "return on investment",
+        "ai pricing",
+        "token economics",
+        "ai roi",
         "open source ai",
+        "open-weights",
         "foundation model",
+        "openai",
+        "anthropic",
+        "deepmind",
         "سرمایه‌گذاری هوش مصنوعی",
         "مدل کسب‌وکار هوش مصنوعی",
       ],
@@ -175,16 +182,14 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       enabled: true,
       keywords: [
         "ai antitrust",
-        "market power",
-        "big tech",
-        "competition policy",
-        "monopoly",
-        "network effects",
+        "ai monopoly",
+        "ai competition",
         "data economics",
         "training data",
-        "copyright",
-        "intellectual property",
-        "ضدانحصار",
+        "ai copyright",
+        "synthetic data",
+        "model weights",
+        "ضدانحصار هوش مصنوعی",
         "اقتصاد داده",
       ],
     },
@@ -193,14 +198,13 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       label: "ژئواکونومیک هوش مصنوعی، کنترل صادرات و سیاست صنعتی",
       enabled: true,
       keywords: [
-        "chip export controls",
-        "export controls",
+        "chip export",
+        "ai export controls",
         "chips act",
         "sovereign ai",
-        "industrial policy",
         "ai race",
-        "technological competition",
         "ai supply chain",
+        "chip war",
         "ژئواکونومیک هوش مصنوعی",
         "حاکمیت هوش مصنوعی",
       ],
@@ -215,9 +219,9 @@ export const AI_ECONOMICS_PACK: NewsPack = {
         "ai governance",
         "ai policy",
         "robot tax",
-        "universal basic income",
         "ai safety",
         "public sector ai",
+        "algorithmic bias",
         "مقررات هوش مصنوعی",
         "سیاست‌گذاری هوش مصنوعی",
       ],
@@ -229,14 +233,13 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       keywords: [
         "ai in finance",
         "central bank ai",
-        "financial stability",
-        "fintech",
+        "ai in banking",
         "algorithmic trading",
-        "drug discovery",
+        "ai drug discovery",
         "ai in healthcare",
         "industrial ai",
         "هوش مصنوعی در مالی",
-        "تحول دیجیتال",
+        "هوش مصنوعی در بانکداری",
       ],
     },
   ],
@@ -269,7 +272,7 @@ export const AI_ECONOMICS_PACK: NewsPack = {
       description: "جدیدترین مقالات کاری اقتصاددانان برجسته (از جمله پژوهش‌های اقتصاد هوش مصنوعی، اتوماسیون و رشد)",
       priority: 1,
       fetchIntervalMinutes: 180,
-      maxItemsPerFetch: 40,
+      maxItemsPerFetch: 20,
     },
     {
       name: "Project Syndicate — Economics",
@@ -407,16 +410,61 @@ export type TopicMergeResult = {
 };
 
 /**
+ * Upgrades pack-managed topic rows (`pack-econ-*` from the retired general
+ * economics pack or older `pack-aiecon-*` keyword lists) to the current
+ * AI-anchored `AI_ECONOMICS_PACK.topics`, while leaving custom operator-added
+ * topics completely untouched.
+ */
+export function upgradeLegacyPackTopicFilter(filter: AiTopicFilterConfig): AiTopicFilterConfig {
+  if (!filter?.topics?.length) return filter;
+  const hasPackTopics = filter.topics.some(
+    (topic) => topic.id.startsWith("pack-econ-") || topic.id.startsWith("pack-aiecon-"),
+  );
+  if (!hasPackTopics) return filter;
+
+  const disabledPackIds = new Set(
+    filter.topics
+      .filter((topic) => topic.id.startsWith("pack-aiecon-") && !topic.enabled)
+      .map((topic) => topic.id),
+  );
+  const customTopics = filter.topics.filter(
+    (topic) => !topic.id.startsWith("pack-econ-") && !topic.id.startsWith("pack-aiecon-"),
+  );
+  const upgradedPackTopics: AiTopicRule[] = AI_ECONOMICS_PACK.topics.map((seed) => ({
+    id: seed.id,
+    label: seed.label,
+    enabled: !disabledPackIds.has(seed.id),
+    keywords: [...seed.keywords],
+  }));
+
+  return {
+    ...filter,
+    topics: [...customTopics, ...upgradedPackTopics].slice(0, TOPIC_LIMIT),
+  };
+}
+
+/**
  * Merges a pack's topics into an existing list without duplicating labels or
  * ids, respecting the 30-topic validation limit of `ai-config/config-service`.
+ * When applying `ai-economics`, retired `pack-econ-*` general-economics pack
+ * topics are removed and stale `pack-aiecon-*` pack topics refresh their keywords.
  */
 export function mergePackTopics(existing: readonly AiTopicRule[], pack: NewsPack): TopicMergeResult {
-  const result: AiTopicRule[] = existing.map((topic) => ({
+  const cleanedExisting =
+    pack.id === "ai-economics"
+      ? existing.filter((topic) => !topic.id.startsWith("pack-econ-"))
+      : existing;
+
+  const result: AiTopicRule[] = cleanedExisting.map((topic) => ({
     ...topic,
     keywords: [...topic.keywords],
   }));
-  const seenLabels = new Set(result.map((topic) => normalizeTopicLabel(topic.label)));
-  const seenIds = new Set(result.map((topic) => topic.id));
+  const byLabel = new Map<string, number>();
+  const seenIds = new Set<string>();
+  result.forEach((topic, idx) => {
+    byLabel.set(normalizeTopicLabel(topic.label), idx);
+    seenIds.add(topic.id);
+  });
 
   const added: string[] = [];
   const skipped: string[] = [];
@@ -424,8 +472,16 @@ export function mergePackTopics(existing: readonly AiTopicRule[], pack: NewsPack
 
   for (const seed of pack.topics) {
     const key = normalizeTopicLabel(seed.label);
-    if (seenLabels.has(key)) {
-      skipped.push(seed.label);
+    const existingIdx = byLabel.get(key);
+    if (existingIdx !== undefined) {
+      const current = result[existingIdx];
+      // Refresh pack-owned topic keywords if the pack definition evolved; custom topics stay untouched.
+      if (current.id === seed.id && JSON.stringify(current.keywords) !== JSON.stringify(seed.keywords)) {
+        result[existingIdx] = { ...current, keywords: [...seed.keywords] };
+        added.push(seed.label);
+      } else {
+        skipped.push(seed.label);
+      }
       continue;
     }
     if (result.length >= TOPIC_LIMIT) {
@@ -445,7 +501,7 @@ export function mergePackTopics(existing: readonly AiTopicRule[], pack: NewsPack
       enabled: true,
       keywords: [...seed.keywords],
     });
-    seenLabels.add(key);
+    byLabel.set(key, result.length - 1);
     seenIds.add(id);
     added.push(seed.label);
   }

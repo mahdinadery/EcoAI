@@ -164,7 +164,7 @@ export async function listLatestNews(limit = 60): Promise<NewsListItem[]> {
     })
     .from(news)
     .where(sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`)
-    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`), desc(news.id))
+    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt} - interval '3 days')`), desc(news.id))
     .limit(Math.min(Math.max(limit, 1), 200));
 
   return rows.map((row) => ({

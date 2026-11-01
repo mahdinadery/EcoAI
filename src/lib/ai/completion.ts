@@ -17,10 +17,10 @@ const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 const FALLBACK_COMPACT_MAX_TOKENS = 1_200;
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 2;
 const RATE_LIMIT_BUFFER_MS = 1_000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504, 522, 524, 529]);
 
@@ -291,6 +291,8 @@ export async function callAiChatCompletion(
   options?: {
     fetchImpl?: typeof fetch;
     retryBaseDelayMs?: number;
+    timeoutMs?: number;
+    maxRetries?: number;
   },
 ): Promise<CompletionResult> {
   const apiKey = resolveAiApiKey();
@@ -308,6 +310,8 @@ export async function callAiChatCompletion(
   const model = resolveEffectiveModel(params.model, { baseUrl, apiKey });
   const fetchFn = options?.fetchImpl ?? fetch;
   const retryBaseMs = options?.retryBaseDelayMs ?? 2_000;
+  const requestTimeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const maxRetries = options?.maxRetries ?? MAX_RETRIES;
 
   let useJsonObjectFormat = true;
   let useMaxCompletionTokens = false;
@@ -315,12 +319,12 @@ export async function callAiChatCompletion(
   let effectiveMaxTokens = params.maxTokens;
   let effectiveUserPrompt = params.userPrompt;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
 
     const timer = setTimeout(() => {
       controller.abort();
-    }, REQUEST_TIMEOUT_MS);
+    }, requestTimeoutMs);
 
     try {
       const requestBody: Record<string, unknown> = {
@@ -368,18 +372,18 @@ export async function callAiChatCompletion(
         const conciseReason = extractProviderErrorReason(safeDetail);
 
         // 1) Reasoning-model compatibility: switch max_tokens -> max_completion_tokens / drop custom temperature
-        if (!useMaxCompletionTokens && shouldSwitchToMaxCompletionTokens(response.status, safeDetail) && attempt < MAX_RETRIES) {
+        if (!useMaxCompletionTokens && shouldSwitchToMaxCompletionTokens(response.status, safeDetail) && attempt < maxRetries) {
           useMaxCompletionTokens = true;
           if (shouldDropTemperature(response.status, safeDetail)) includeTemperature = false;
           continue;
         }
-        if (includeTemperature && shouldDropTemperature(response.status, safeDetail) && attempt < MAX_RETRIES) {
+        if (includeTemperature && shouldDropTemperature(response.status, safeDetail) && attempt < maxRetries) {
           includeTemperature = false;
           continue;
         }
 
         // 2) Fallback once if the upstream model rejects `response_format: { type: "json_object" }`
-        if (useJsonObjectFormat && shouldDropJsonObjectFormat(response.status, safeDetail) && attempt < MAX_RETRIES) {
+        if (useJsonObjectFormat && shouldDropJsonObjectFormat(response.status, safeDetail) && attempt < maxRetries) {
           useJsonObjectFormat = false;
           console.warn(`[ai] Model "${model}" rejected json_object response_format (HTTP ${response.status}); retrying without it.`);
           continue;
@@ -389,7 +393,7 @@ export async function callAiChatCompletion(
         if (
           effectiveMaxTokens > FALLBACK_COMPACT_MAX_TOKENS &&
           shouldShrinkTokenBudget(response.status, safeDetail) &&
-          attempt < MAX_RETRIES
+          attempt < maxRetries
         ) {
           effectiveMaxTokens = FALLBACK_COMPACT_MAX_TOKENS;
           if (effectiveUserPrompt.length > 4_000) {
@@ -400,7 +404,7 @@ export async function callAiChatCompletion(
         }
 
         // 4) Retry rate-limit (429) and transient server/overload statuses (500/502/503/504/529)
-        if (TRANSIENT_HTTP_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+        if (TRANSIENT_HTTP_STATUSES.has(response.status) && attempt < maxRetries) {
           const providerWaitMs = extractRetryWaitMs(safeDetail, response.headers.get("retry-after"));
           const fallbackBackoffMs =
             response.status === 429 ? 8_000 : retryBaseMs * Math.pow(2, attempt);
@@ -408,7 +412,7 @@ export async function callAiChatCompletion(
 
           console.warn(
             `[ai] Upstream HTTP ${response.status} for model "${model}". Retrying in ${waitMs}ms ` +
-              `(attempt ${attempt + 1}/${MAX_RETRIES}).`,
+              `(attempt ${attempt + 1}/${maxRetries}).`,
           );
 
           await sleep(waitMs);
@@ -459,7 +463,7 @@ export async function callAiChatCompletion(
         ok: false,
         kind: aborted ? "timeout" : "network_error",
         message: aborted
-          ? `زمان درخواست هوش مصنوعی به پایان رسید (${REQUEST_TIMEOUT_MS}ms).`
+          ? `زمان درخواست هوش مصنوعی به پایان رسید (${requestTimeoutMs}ms).`
           : `خطای شبکه در اتصال به سرویس هوش مصنوعی (${baseUrl}).`,
         detail:
           error instanceof Error

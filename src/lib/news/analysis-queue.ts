@@ -17,7 +17,9 @@ import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { analyzeArticle } from "./analyze";
 import { evaluateTopicFilter, isTopicGateActive } from "./topic-filter";
 
-export const STALE_PROCESSING_MINUTES = 15;
+export const STALE_PROCESSING_MINUTES = 2;
+const DEFAULT_PASS_BUDGET_MS = 55_000;
+const SWEEP_BATCH_LIMIT = 250;
 
 export type QueuedAnalysisResult = {
   id: string;
@@ -92,12 +94,64 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
 }
 
 /**
- * Oldest READY_FOR_AI items first, followed by previously FAILED unanalyzed
- * items so transient AI outages or key fixes automatically drain without
- * manual per-item clicks.
+ * Sweeps pending unanalyzed articles (`READY_FOR_AI` and unanalyzed `FAILED`)
+ * through the active topic filter in one fast in-memory pass so off-topic RSS
+ * items (e.g. non-AI working papers from broad economics feeds) neither clog
+ * `/news` nor consume the bounded per-run `maxAnalyze` slots.
+ */
+export async function sweepOfftopicBacklog(): Promise<{ swept: number }> {
+  try {
+    const settings = await readActiveOperationalSettings();
+    const filter = settings?.topicFilter ?? null;
+    if (!isTopicGateActive(filter)) {
+      return { swept: 0 };
+    }
+
+    const pendingRows = await db
+      .select({
+        id: news.id,
+        title: news.title,
+        description: news.description,
+        content: news.content,
+      })
+      .from(news)
+      .where(
+        sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('READY_FOR_AI', 'FAILED')`,
+      )
+      .limit(SWEEP_BATCH_LIMIT);
+
+    if (pendingRows.length === 0) return { swept: 0 };
+
+    const skippedIds: string[] = [];
+    for (const row of pendingRows) {
+      if (evaluateTopicFilter(row, filter).verdict !== "pass") {
+        skippedIds.push(row.id);
+      }
+    }
+
+    if (skippedIds.length > 0) {
+      await db
+        .update(news)
+        .set({ status: "SKIPPED_OFFTOPIC", updatedAt: new Date() })
+        .where(inArray(news.id, skippedIds));
+    }
+
+    return { swept: skippedIds.length };
+  } catch (error) {
+    console.error("[analysis-queue] off-topic sweep failed:", String(error).slice(0, 160));
+    return { swept: 0 };
+  }
+}
+
+/**
+ * Newest READY_FOR_AI items first (with dateless RSS items demoted slightly so
+ * dated articles from timely AI-economics feeds are never starved), followed by
+ * previously FAILED unanalyzed items.
  */
 export async function selectAnalysisBacklog(limit: number, excludeIds: string[] = []): Promise<string[]> {
   if (limit <= 0) return [];
+
+  await sweepOfftopicBacklog();
 
   const rows = await db
     .select({ id: news.id })
@@ -115,27 +169,55 @@ export async function selectAnalysisBacklog(limit: number, excludeIds: string[] 
     )
     .orderBy(
       sql`CASE WHEN ${news.status} = 'READY_FOR_AI' THEN 0 ELSE 1 END ASC`,
-      sql`coalesce(${news.publishedAt}, ${news.createdAt}) ASC`,
+      sql`coalesce(${news.publishedAt}, ${news.createdAt} - interval '3 days') DESC`,
     )
     .limit(limit);
 
   return rows.map((row) => row.id);
 }
 
-/** Sequential, failure-isolated analysis (the provider has a low TPM limit). */
-export async function analyzeSequentially(ids: string[]): Promise<QueuedAnalysisResult[]> {
+function isFatalProviderConfigFailure(code: string | null, detail: string | null): boolean {
+  if (code === "missing_key") return true;
+  if (code === "http_error" && detail) {
+    return /^HTTP\s+(401|402|403|404)\b/i.test(detail.trim());
+  }
+  return false;
+}
+
+/**
+ * Sequential, failure-isolated analysis (the provider has a low TPM limit).
+ * Stops early if:
+ *  - a fatal provider key/auth/endpoint error occurs (no point hammering N more items), or
+ *  - the pass time budget (`maxDurationMs`, default 55s) is reached so HTTP callers
+ *    return cleanly before reverse-proxy timeouts (~100s on Render).
+ */
+export async function analyzeSequentially(
+  ids: string[],
+  options: { maxDurationMs?: number } = {},
+): Promise<QueuedAnalysisResult[]> {
   const results: QueuedAnalysisResult[] = [];
+  const startedAt = Date.now();
+  const maxDurationMs = options.maxDurationMs ?? DEFAULT_PASS_BUDGET_MS;
 
   for (const id of ids) {
+    if (results.length > 0 && Date.now() - startedAt >= maxDurationMs) {
+      break;
+    }
+
     try {
       const analysis = await analyzeArticle(id);
-      results.push({
+      const entry: QueuedAnalysisResult = {
         id,
         ok: analysis.ok,
         code: analysis.ok ? null : analysis.code,
         message: analysis.ok ? null : analysis.message,
         detail: analysis.ok ? null : (analysis.detail ?? null),
-      });
+      };
+      results.push(entry);
+
+      if (!entry.ok && isFatalProviderConfigFailure(entry.code, entry.detail)) {
+        break;
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       console.error("[analysis-queue] article analysis failed:", detail.slice(0, 200));

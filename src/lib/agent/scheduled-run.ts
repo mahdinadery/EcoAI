@@ -23,6 +23,7 @@ import {
   applyTopicGate,
   recoverStaleProcessing,
   selectAnalysisBacklog,
+  sweepOfftopicBacklog,
 } from "@/lib/news/analysis-queue";
 import { collapseEventGroups } from "@/lib/news/corroboration";
 import { deriveGapQueries, buildSearchUrl, MAX_GAP_QUERIES } from "@/lib/news/gap-search";
@@ -511,6 +512,7 @@ async function executeScheduledPass(args: {
   // 2) Analyze the pending backlog (oldest first, bounded per run).
   try {
     await recoverStaleProcessing();
+    const swept = await sweepOfftopicBacklog();
 
     const selected = await selectAnalysisBacklog(args.config.maxAnalyze);
     const gated = await applyTopicGate(selected);
@@ -522,7 +524,7 @@ async function executeScheduledPass(args: {
       selected: selected.length,
       analyzed: results.filter((item) => item.ok).length,
       failed: failedAnalyses.length,
-      skippedOfftopic: gated.skipped.length,
+      skippedOfftopic: swept.swept + gated.skipped.length,
     };
 
     // Without this, a missing AI key only shows up as "0 analyzed / N failed"

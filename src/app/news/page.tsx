@@ -1,4 +1,5 @@
 import { isNextProductionBuild } from "@/db";
+import { recoverStaleProcessing, sweepOfftopicBacklog } from "@/lib/news/analysis-queue";
 import { getNewsStats, listLatestNews, type NewsListItem, type NewsStats } from "@/lib/news/ingest";
 import { getDeliveryStates } from "@/lib/delivery";
 import { NewsList, type NewsDeliveryStates } from "@/components/news-list";
@@ -27,6 +28,12 @@ async function loadNews(): Promise<LoadResult> {
   }
 
   try {
+    try {
+      await recoverStaleProcessing();
+      await sweepOfftopicBacklog();
+    } catch {
+      // Non-fatal housekeeping before rendering the news feed.
+    }
     const [items, stats] = await Promise.all([listLatestNews(60), getNewsStats()]);
     const deliveryStates = await getDeliveryStates(items.map((item) => item.id));
     return { items, stats, deliveryStates, error: false };

@@ -76,12 +76,17 @@ async function recordAnalysisHistory(input: {
   }
 }
 
+export type AnalyzeArticleOptions = {
+  /** Override an in-flight `AI_PROCESSING` lock (e.g. operator clicked "لغو قفل و تلاش مجدد"). */
+  force?: boolean;
+};
+
 /**
  * Loads a news article by ID, enriches short RSS snippets with full article
  * body when available, translates + summarizes + scores it with AI using the
  * active configuration, and stores the structured results.
  */
-export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
+export async function analyzeArticle(id: string, options: AnalyzeArticleOptions = {}): Promise<AnalyzeResult> {
   let article: NewsRow | undefined;
 
   try {
@@ -109,18 +114,26 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
   const config = await getActiveAiConfig();
 
   // Atomic claim before the AI call: exactly one analysis per article at a time.
+  // Any `AI_PROCESSING` lock older than 90s (e.g. container restart or proxy
+  // timeout mid-request) is automatically treated as stale and reclaimed.
+  const claimWhere = options.force
+    ? eq(news.id, id)
+    : and(
+        eq(news.id, id),
+        sql`(${news.status} <> 'AI_PROCESSING' OR ${news.updatedAt} < now() - interval '90 seconds')`,
+      );
   try {
     const [claimed] = await db
       .update(news)
       .set({ status: "AI_PROCESSING", updatedAt: new Date() })
-      .where(and(eq(news.id, id), sql`${news.status} <> 'AI_PROCESSING'`))
+      .where(claimWhere)
       .returning({ id: news.id });
 
     if (!claimed) {
       return {
         ok: false,
         code: "already_processing",
-        message: "تحلیل این خبر هم‌اکنون در حال انجام است؛ چند دقیقه دیگر دوباره تلاش کنید.",
+        message: "تحلیل این خبر هم‌اکنون در حال انجام است؛ چند ثانیه صبر کنید یا قفل را لغو کنید.",
         detail: null,
       };
     }
@@ -128,171 +141,188 @@ export async function analyzeArticle(id: string): Promise<AnalyzeResult> {
     // Best effort; on a transient bookkeeping error the analysis will still proceed.
   }
 
-  // Enrich short RSS teasers by fetching readable article prose from the webpage.
-  let effectiveContent = article.content ?? article.normalizedContent ?? null;
-  if (
-    shouldFetchFullArticleText({
-      url: article.url,
-      description: article.description,
-      content: effectiveContent,
-    })
-  ) {
-    const extracted = await fetchArticleBody(article.url);
-    if (extracted && extracted.length > (effectiveContent ?? "").length) {
-      effectiveContent = extracted;
-      try {
-        await db
-          .update(news)
-          .set({
-            content: extracted,
-            normalizedContent: normalizeContent(extracted, article.description),
-            updatedAt: new Date(),
-          })
-          .where(eq(news.id, id));
-      } catch {
-        // Non-blocking: AI analysis still gets `effectiveContent` in memory.
+  let settled = false;
+  try {
+    // Enrich short RSS teasers by fetching readable article prose from the webpage.
+    let effectiveContent = article.content ?? article.normalizedContent ?? null;
+    if (
+      shouldFetchFullArticleText({
+        url: article.url,
+        description: article.description,
+        content: effectiveContent,
+      })
+    ) {
+      const extracted = await fetchArticleBody(article.url);
+      if (extracted && extracted.length > (effectiveContent ?? "").length) {
+        effectiveContent = extracted;
+        try {
+          await db
+            .update(news)
+            .set({
+              content: extracted,
+              normalizedContent: normalizeContent(extracted, article.description),
+              updatedAt: new Date(),
+            })
+            .where(eq(news.id, id));
+        } catch {
+          // Non-blocking: AI analysis still gets `effectiveContent` in memory.
+        }
       }
     }
-  }
 
-  const composed = composeArticleTextForAi({
-    description: article.description,
-    content: effectiveContent,
-  });
-
-  // AI Service call — prompt/model/thresholds/output schema all come from `config`.
-  const result = await runAiAnalysis(
-    {
-      title: article.title,
-      description: composed.summarySnippet ?? article.description,
-      content: composed.fullText,
-      source: article.source,
-      publishedAt: article.publishedAt ? article.publishedAt.toISOString() : null,
-    },
-    config,
-  );
-
-  if (!result.ok) {
-    await recordAnalysisHistory({
-      newsId: id,
-      configurationId: config.id,
-      configurationVersion: config.version,
-      model: resolveEffectiveModel(config.model),
-      status: "failed",
-      errorMessage: `${result.message}${result.detail ? ` — ${String(result.detail).slice(0, 300)}` : ""}`,
+    const composed = composeArticleTextForAi({
+      description: article.description,
+      content: effectiveContent,
     });
-    try {
-      await db.update(news).set({ status: "FAILED", updatedAt: new Date() }).where(eq(news.id, id));
-    } catch {
-      // status bookkeeping must not change the response contract
-    }
-    return {
-      ok: false,
-      code: result.kind,
-      message: result.message,
-      detail: result.detail,
-    };
-  }
 
-  const {
-    translatedTitle,
-    summary,
-    category,
-    importance,
-    relevance,
-    novelty,
-    mainEvent,
-    whyItMatters,
-    hashtags,
-    entities,
-    shouldSend,
-    reason,
-  } = result.analysis;
+    // AI Service call — prompt/model/thresholds/output schema all come from `config`.
+    const result = await runAiAnalysis(
+      {
+        title: article.title,
+        description: composed.summarySnippet ?? article.description,
+        content: composed.fullText,
+        source: article.source,
+        publishedAt: article.publishedAt ? article.publishedAt.toISOString() : null,
+      },
+      config,
+    );
 
-  // Borderline relevance gets ONE cheap second opinion.
-  let relevanceGrade: string | null = null;
-  let combinedUsage: AiTokenUsage | null = result.usage;
-  if (isBorderlineRelevance(relevance, config.decisionRules)) {
-    try {
-      const gradeOutcome = await gradeRelevanceWithUsage({
-        title: translatedTitle ? `${translatedTitle} (${article.title})` : article.title,
-        summary,
-        audienceFocus: config.audienceFocus,
+    if (!result.ok) {
+      await recordAnalysisHistory({
+        newsId: id,
+        configurationId: config.id,
+        configurationVersion: config.version,
+        model: resolveEffectiveModel(config.model),
+        status: "failed",
+        errorMessage: `${result.message}${result.detail ? ` — ${String(result.detail).slice(0, 300)}` : ""}`,
       });
-      combinedUsage = mergeTokenUsage(result.usage, gradeOutcome.usage);
-      if (gradeOutcome.verdict === "no") relevanceGrade = "rejected";
-      else if (gradeOutcome.verdict === "yes") relevanceGrade = "confirmed";
-    } catch {
-      relevanceGrade = null;
-    }
-  }
-
-  try {
-    const [updated] = await db
-      .update(news)
-      .set({
-        translatedTitle,
-        summary,
-        category,
-        importanceScore: importance,
-        relevanceScore: relevance,
-        noveltyScore: novelty,
-        mainEvent,
-        whyItMatters,
-        hashtags,
-        entityTags: entities,
-        relevanceGrade,
-        shouldSend,
-        analysisReason: reason,
-        analyzedAt: new Date(),
-        aiConfigVersion: config.version,
-        status: shouldSend ? "READY_TO_SEND" : "AI_ANALYZED",
-        updatedAt: new Date(),
-      })
-      .where(eq(news.id, id))
-      .returning();
-
-    if (!updated) {
+      try {
+        await db.update(news).set({ status: "FAILED", updatedAt: new Date() }).where(eq(news.id, id));
+        settled = true;
+      } catch {
+        // status bookkeeping must not change the response contract
+      }
       return {
         ok: false,
-        code: "update_failed",
-        message: "ذخیره تحلیل در پایگاه داده ناموفق بود.",
-        detail: null,
+        code: result.kind,
+        message: result.message,
+        detail: result.detail,
       };
     }
 
-    await recordAnalysisHistory({
-      newsId: id,
-      configurationId: config.id,
-      configurationVersion: config.version,
-      model: result.model ?? resolveEffectiveModel(config.model),
-      status: "success",
-      usage: combinedUsage,
-      shadowEvaluation: result.shadowEvaluation,
-      analysis: {
-        translatedTitle,
-        summary,
-        category,
-        importance,
-        relevance,
-        novelty,
-        mainEvent: mainEvent ?? null,
-        whyItMatters,
-        hashtags,
-        entities,
-        shouldSend,
-        reason,
-      },
-    });
+    const {
+      translatedTitle,
+      summary,
+      category,
+      importance,
+      relevance,
+      novelty,
+      mainEvent,
+      whyItMatters,
+      hashtags,
+      entities,
+      shouldSend,
+      reason,
+    } = result.analysis;
 
-    return { ok: true, newsItem: updated };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      code: "db_write_error",
-      message: "خطا در نوشتن نتایج تحلیل روی دیتابیس.",
-      detail,
-    };
+    // Borderline relevance gets ONE cheap second opinion.
+    let relevanceGrade: string | null = null;
+    let combinedUsage: AiTokenUsage | null = result.usage;
+    if (isBorderlineRelevance(relevance, config.decisionRules)) {
+      try {
+        const gradeOutcome = await gradeRelevanceWithUsage({
+          title: translatedTitle ? `${translatedTitle} (${article.title})` : article.title,
+          summary,
+          audienceFocus: config.audienceFocus,
+        });
+        combinedUsage = mergeTokenUsage(result.usage, gradeOutcome.usage);
+        if (gradeOutcome.verdict === "no") relevanceGrade = "rejected";
+        else if (gradeOutcome.verdict === "yes") relevanceGrade = "confirmed";
+      } catch {
+        relevanceGrade = null;
+      }
+    }
+
+    try {
+      const [updated] = await db
+        .update(news)
+        .set({
+          translatedTitle,
+          summary,
+          category,
+          importanceScore: importance,
+          relevanceScore: relevance,
+          noveltyScore: novelty,
+          mainEvent,
+          whyItMatters,
+          hashtags,
+          entityTags: entities,
+          relevanceGrade,
+          shouldSend,
+          analysisReason: reason,
+          analyzedAt: new Date(),
+          aiConfigVersion: config.version,
+          status: shouldSend ? "READY_TO_SEND" : "AI_ANALYZED",
+          updatedAt: new Date(),
+        })
+        .where(eq(news.id, id))
+        .returning();
+
+      if (!updated) {
+        return {
+          ok: false,
+          code: "update_failed",
+          message: "ذخیره تحلیل در پایگاه داده ناموفق بود.",
+          detail: null,
+        };
+      }
+
+      settled = true;
+
+      await recordAnalysisHistory({
+        newsId: id,
+        configurationId: config.id,
+        configurationVersion: config.version,
+        model: result.model ?? resolveEffectiveModel(config.model),
+        status: "success",
+        usage: combinedUsage,
+        shadowEvaluation: result.shadowEvaluation,
+        analysis: {
+          translatedTitle,
+          summary,
+          category,
+          importance,
+          relevance,
+          novelty,
+          mainEvent: mainEvent ?? null,
+          whyItMatters,
+          hashtags,
+          entities,
+          shouldSend,
+          reason,
+        },
+      });
+
+      return { ok: true, newsItem: updated };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        code: "db_write_error",
+        message: "خطا در نوشتن نتایج تحلیل روی دیتابیس.",
+        detail,
+      };
+    }
+  } finally {
+    if (!settled) {
+      try {
+        await db
+          .update(news)
+          .set({ status: "FAILED", updatedAt: new Date() })
+          .where(and(eq(news.id, id), eq(news.status, "AI_PROCESSING")));
+      } catch {
+        // Best-effort cleanup so rows never stay stuck in AI_PROCESSING.
+      }
+    }
   }
 }

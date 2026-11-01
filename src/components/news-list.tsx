@@ -112,6 +112,7 @@ function ArticleCard({
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeCode, setAnalyzeCode] = useState<string | null>(null);
   const [analyzeDetail, setAnalyzeDetail] = useState<string | null>(null);
   const [autoNote, setAutoNote] = useState<string | null>(null);
   const [sendResults, setSendResults] = useState<SendOutcome[] | null>(null);
@@ -119,16 +120,22 @@ function ArticleCard({
 
   const hasAnalysis = Boolean(item.analyzedAt);
 
-  async function handleAnalyze() {
+  async function handleAnalyze(force = false) {
     if (analyzing) return;
     setAnalyzing(true);
     setAnalyzeError(null);
+    setAnalyzeCode(null);
     setAnalyzeDetail(null);
 
     try {
-      const res = await fetch(`/api/news/${item.id}/analyze`, { method: "POST" });
+      const res = await fetch(`/api/news/${item.id}/analyze`, {
+        method: "POST",
+        headers: force ? { "Content-Type": "application/json" } : undefined,
+        body: force ? JSON.stringify({ force: true }) : undefined,
+      });
       const data = (await res.json()) as {
         success: boolean;
+        code?: string;
         message?: string;
         detail?: string | null;
         newsItem?: AnalysisPatch;
@@ -170,6 +177,7 @@ function ArticleCard({
         }
       } else {
         setAnalyzeError(data.message || "تحلیل هوشمند با شکست مواجه شد.");
+        setAnalyzeCode(data.code ?? null);
         setAnalyzeDetail(data.detail ? data.detail.slice(0, 260) : null);
       }
     } catch {
@@ -314,7 +322,21 @@ function ArticleCard({
               {analyzeDetail}
             </p>
           ) : null}
-          <p className="mt-1.5 text-muted">برای آزمایش مجدد روی دکمه تحلیل کلیک کنید.</p>
+          {analyzeCode === "already_processing" ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                className="rounded-lg bg-danger px-3 py-1.5 text-xs font-bold text-white hover:opacity-90 disabled:opacity-50"
+                disabled={analyzing}
+                onClick={() => void handleAnalyze(true)}
+                type="button"
+              >
+                لغو قفل و تلاش مجدد فوری
+              </button>
+              <span className="text-muted">اگر پردازش قبلی قطع شده است، با این دکمه بلافاصله بازنشانی می‌شود.</span>
+            </div>
+          ) : (
+            <p className="mt-1.5 text-muted">برای آزمایش مجدد روی دکمه تحلیل کلیک کنید.</p>
+          )}
         </div>
       ) : null}
 
@@ -437,7 +459,7 @@ function ArticleCard({
                 : "bg-accent text-white hover:bg-accent-strong shadow-sm"
           }`}
           disabled={analyzing}
-          onClick={handleAnalyze}
+          onClick={() => void handleAnalyze(false)}
           type="button"
         >
           {analyzing ? "در حال تحلیل..." : hasAnalysis ? "تحلیل مجدد هوشمند" : "تحلیل با AI"}

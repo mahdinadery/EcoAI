@@ -40,8 +40,13 @@ export function normalizeTranslatedTitle(value: unknown): string | null {
 
 /** Canonical, bounded hashtags; remove legacy Markdown escaping and discard prose. */
 export function normalizeHashtags(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const tags = value.replace(/\\_/g, "_").match(/#[\p{L}\p{N}_\u200c]+/gu) ?? [];
+  const source = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string").join(" ")
+    : typeof value === "string"
+      ? value
+      : null;
+  if (!source) return null;
+  const tags = source.replace(/\\_/g, "_").match(/#[\p{L}\p{N}_\u200c]+/gu) ?? [];
   const clean = [...new Set(tags.filter(tag => tag.length > 1 && tag.length <= 80 && /[\p{L}\p{N}]/u.test(tag)))].slice(0, 6);
   return clean.length ? clean.join(" ") : null;
 }
@@ -67,9 +72,19 @@ function clampScore(value: unknown, fallback = 0): number {
 }
 
 function extractJsonText(rawText: string): string {
-  let jsonText = rawText.trim();
+  // Strip <think>...</think> blocks emitted by reasoning models (DeepSeek-R1, Qwen, etc.)
+  let jsonText = rawText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   const match = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(jsonText);
   if (match) jsonText = match[1].trim();
+
+  // If the model wrapped a JSON object in brief prose without markdown fences, isolate `{ ... }`.
+  if (!jsonText.startsWith("{") && !jsonText.startsWith("[")) {
+    const firstBrace = jsonText.indexOf("{");
+    const lastBrace = jsonText.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      jsonText = jsonText.slice(firstBrace, lastBrace + 1).trim();
+    }
+  }
   return jsonText;
 }
 
@@ -130,7 +145,11 @@ export function validateAiOutputAgainstSchema(
       continue;
     }
 
-    if (field.type === "string" && typeof value !== "string" && !(field.name === "entities" && Array.isArray(value) && value.every(v => typeof v === "string"))) {
+    if (
+      field.type === "string" &&
+      typeof value !== "string" &&
+      !((field.name === "entities" || field.name === "hashtags") && Array.isArray(value) && value.every(v => typeof v === "string"))
+    ) {
       issues.push({ field: field.name, message: `نوع مقدار باید متن (string) باشد، دریافت شد: ${typeof value}.` });
     }
 

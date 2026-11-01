@@ -5,8 +5,12 @@ import {
   callAiChatCompletion,
   extractProviderErrorReason,
   extractTokenUsage,
+  inferBaseUrlFromApiKey,
   mergeTokenUsage,
   normalizeAiBaseUrl,
+  resolveAiApiKey,
+  resolveEffectiveBaseUrl,
+  resolveEffectiveModel,
 } from "../src/lib/ai/completion.ts";
 import { STEPS } from "../scripts/db-ensure.mjs";
 
@@ -190,3 +194,72 @@ test("callAiChatCompletion drops json_object response_format when rejected by up
     else process.env.AI_API_KEY = prevKey;
   }
 });
+
+test("provider auto-detection resolves Gemini, Groq, and OpenRouter endpoints & default models from API key", () => {
+  assert.equal(inferBaseUrlFromApiKey("AIzaSyDummyGeminiKey123"), "https://generativelanguage.googleapis.com/v1beta/openai");
+  assert.equal(inferBaseUrlFromApiKey("gsk_DummyGroqKey123"), "https://api.groq.com/openai/v1");
+  assert.equal(inferBaseUrlFromApiKey("sk-or-v1-DummyOpenRouterKey"), "https://openrouter.ai/api/v1");
+
+  const geminiEnv = { GEMINI_API_KEY: "AIzaSyDummyGeminiKey123" };
+  const key = resolveAiApiKey(geminiEnv);
+  const baseUrl = resolveEffectiveBaseUrl(key, geminiEnv);
+  const model = resolveEffectiveModel("", { baseUrl, apiKey: key, env: geminiEnv });
+  assert.equal(key, "AIzaSyDummyGeminiKey123");
+  assert.equal(baseUrl, "https://generativelanguage.googleapis.com/v1beta/openai");
+  assert.equal(model, "gemini-2.5-flash");
+
+  assert.equal(
+    resolveEffectiveModel("", { baseUrl: "https://api.groq.com/openai/v1", env: {} }),
+    "llama-3.3-70b-versatile",
+  );
+  assert.equal(
+    resolveEffectiveModel("", { baseUrl: "https://openrouter.ai/api/v1", env: {} }),
+    "openai/gpt-4o-mini",
+  );
+});
+
+test("callAiChatCompletion shrinks max_tokens automatically on TPM / credit-limit errors", async () => {
+  const prevKey = process.env.AI_API_KEY;
+  process.env.AI_API_KEY = "gsk_test_groq_key";
+  const maxTokensSeen = [];
+
+  try {
+    const result = await callAiChatCompletion(
+      {
+        systemPrompt: "Return JSON.",
+        userPrompt: "A".repeat(5_000),
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.2,
+        maxTokens: 3500,
+      },
+      {
+        retryBaseDelayMs: 5,
+        fetchImpl: async (_url, init) => {
+          const parsedBody = JSON.parse(String(init?.body ?? "{}"));
+          maxTokensSeen.push(parsedBody.max_tokens);
+          if (parsedBody.max_tokens > 1500) {
+            return new Response(
+              JSON.stringify({
+                error: { message: "Request too large for model llama-3.3-70b-versatile on tokens per minute (TPM): Limit 6000, Requested 7200" },
+              }),
+              { status: 429 },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '{"summary":"پاسخ با بودجه توکن فشرده","shouldSend":true}' } }],
+            }),
+            { status: 200 },
+          );
+        },
+      },
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(maxTokensSeen, [3500, 1200]);
+  } finally {
+    if (prevKey === undefined) delete process.env.AI_API_KEY;
+    else process.env.AI_API_KEY = prevKey;
+  }
+});
+

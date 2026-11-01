@@ -65,3 +65,16 @@ test('hashtags have an independent schema field and normalize escaped underscore
   assert.ok(rendered.includes('#بازار_سهام #نقدینگی'));
   assert.ok(!rendered.includes('\\_'));
 });
+
+test('parseAiOutput strips <think> blocks, extracts JSON from prose, and accepts array hashtags', () => {
+  const hashtagSchema = [...schema, { name: 'hashtags', enabled: true, required: false, type: 'string' }];
+  const wrapped = `<think>Analyzing AI economics paper...</think>\nHere is the structured output:\n${JSON.stringify({
+    summary: 'تحلیل بهره‌وری هوش مصنوعی',
+    importance: 75,
+    shouldSend: true,
+    hashtags: ['#اقتصاد_هوش_مصنوعی', '#بهره‌وری'],
+  })}`;
+  const output = parseAiOutput(wrapped, hashtagSchema);
+  assert.equal(output.summary, 'تحلیل بهره‌وری هوش مصنوعی');
+  assert.equal(output.hashtags, '#اقتصاد_هوش_مصنوعی #بهره‌وری');
+});

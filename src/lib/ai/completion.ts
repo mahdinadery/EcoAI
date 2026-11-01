@@ -8,8 +8,17 @@
  */
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+const GROQ_OPENAI_BASE_URL = "https://api.groq.com/openai/v1";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
 const DEFAULT_MODEL = "gpt-4o-mini";
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
+
 const REQUEST_TIMEOUT_MS = 45_000;
+const FALLBACK_COMPACT_MAX_TOKENS = 1_200;
 
 const MAX_RETRIES = 3;
 const RATE_LIMIT_BUFFER_MS = 1_000;
@@ -38,26 +47,84 @@ export type CompletionResult =
     };
 
 /**
- * Normalizes common OpenAI-compatible provider base URLs so minor configuration
- * slips (trailing `/chat/completions`, missing `/v1` or `/openai`) still route
- * to the right chat-completions endpoint.
+ * Resolves the AI provider API key from `AI_API_KEY` or common provider-specific
+ * aliases so minor Render/Docker naming differences do not break analysis.
  */
-export function normalizeAiBaseUrl(rawBaseUrl?: string | null): string {
-  const cleaned = (rawBaseUrl?.trim() || DEFAULT_BASE_URL)
+export function resolveAiApiKey(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.AI_API_KEY?.trim() ||
+    env.OPENAI_API_KEY?.trim() ||
+    env.GEMINI_API_KEY?.trim() ||
+    env.GROQ_API_KEY?.trim() ||
+    env.OPENROUTER_API_KEY?.trim() ||
+    ""
+  );
+}
+
+/**
+ * Infers the OpenAI-compatible base URL from well-known API key prefixes when
+ * `AI_API_BASE_URL` / `AI_BASE_URL` was left blank in the host environment.
+ */
+export function inferBaseUrlFromApiKey(apiKey?: string | null): string | null {
+  const key = apiKey?.trim() ?? "";
+  if (!key) return null;
+  if (key.startsWith("AIza")) return GEMINI_OPENAI_BASE_URL;
+  if (key.startsWith("gsk_")) return GROQ_OPENAI_BASE_URL;
+  if (key.startsWith("sk-or-")) return OPENROUTER_BASE_URL;
+  return null;
+}
+
+/**
+ * Normalizes common OpenAI-compatible provider base URLs so minor configuration
+ * slips (trailing `/chat/completions`, missing `/v1` or `/openai`, or unset URL
+ * with a recognizable Gemini/Groq/OpenRouter key) still route to the right endpoint.
+ */
+export function normalizeAiBaseUrl(rawBaseUrl?: string | null, apiKey?: string | null): string {
+  const explicit = (rawBaseUrl?.trim() ?? "")
     .replace(/\/+$/, "")
     .replace(/\/chat\/completions$/i, "");
 
-  if (/^https:\/\/generativelanguage\.googleapis\.com(?:\/v1beta)?$/i.test(cleaned)) {
-    return "https://generativelanguage.googleapis.com/v1beta/openai";
+  const base = explicit || inferBaseUrlFromApiKey(apiKey) || DEFAULT_BASE_URL;
+
+  if (/^https:\/\/generativelanguage\.googleapis\.com(?:\/v1beta)?$/i.test(base)) {
+    return GEMINI_OPENAI_BASE_URL;
   }
-  if (/^https:\/\/api\.groq\.com(?:\/openai)?$/i.test(cleaned)) {
-    return "https://api.groq.com/openai/v1";
+  if (/^https:\/\/api\.groq\.com(?:\/openai)?$/i.test(base)) {
+    return GROQ_OPENAI_BASE_URL;
   }
-  if (/^https:\/\/openrouter\.ai(?:\/api)?$/i.test(cleaned)) {
-    return "https://openrouter.ai/api/v1";
+  if (/^https:\/\/openrouter\.ai(?:\/api)?$/i.test(base)) {
+    return OPENROUTER_BASE_URL;
   }
 
-  return cleaned;
+  return base;
+}
+
+/**
+ * Resolves the effective base URL from environment variables (`AI_API_BASE_URL`,
+ * `AI_BASE_URL`, `OPENAI_BASE_URL`) with key-prefix fallback.
+ */
+export function resolveEffectiveBaseUrl(apiKey?: string | null, env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.AI_API_BASE_URL?.trim() || env.AI_BASE_URL?.trim() || env.OPENAI_BASE_URL?.trim() || "";
+  return normalizeAiBaseUrl(raw, apiKey);
+}
+
+function defaultModelForBaseUrl(baseUrl: string): string {
+  if (/generativelanguage\.googleapis\.com/i.test(baseUrl)) return DEFAULT_GEMINI_MODEL;
+  if (/api\.groq\.com/i.test(baseUrl)) return DEFAULT_GROQ_MODEL;
+  if (/openrouter\.ai/i.test(baseUrl)) return DEFAULT_OPENROUTER_MODEL;
+  return DEFAULT_MODEL;
+}
+
+export function resolveEffectiveModel(
+  configModel: string | undefined,
+  options?: { baseUrl?: string; apiKey?: string | null; env?: NodeJS.ProcessEnv },
+): string {
+  const env = options?.env ?? process.env;
+  const explicit = configModel?.trim() || env.AI_API_MODEL?.trim() || env.AI_MODEL?.trim();
+  if (explicit) return explicit;
+
+  const baseUrl = options?.baseUrl ?? resolveEffectiveBaseUrl(options?.apiKey ?? resolveAiApiKey(env), env);
+  return defaultModelForBaseUrl(baseUrl);
 }
 
 /**
@@ -81,7 +148,7 @@ export function extractProviderErrorReason(rawBody: string): string | null {
       const msg = typeof errObj.message === "string" ? errObj.message.trim() : "";
       const metaRaw =
         errObj.metadata &&
-        typeof errObj.metadata === "object" &&
+        typeof errObj.metadata &&
         typeof (errObj.metadata as Record<string, unknown>).raw === "string"
           ? ((errObj.metadata as Record<string, unknown>).raw as string).trim()
           : "";
@@ -143,20 +210,10 @@ export function mergeTokenUsage(
   };
 }
 
-function sanitizeSecrets(text: string): string {
-  const key = process.env.AI_API_KEY?.trim();
+function sanitizeSecrets(text: string, apiKey?: string): string {
+  const key = apiKey?.trim() || resolveAiApiKey();
   if (!key) return text;
-
   return text.split(key).join("[REDACTED_API_KEY]");
-}
-
-export function resolveEffectiveModel(configModel: string | undefined): string {
-  return (
-    configModel?.trim() ||
-    process.env.AI_API_MODEL?.trim() ||
-    process.env.AI_MODEL?.trim() ||
-    DEFAULT_MODEL
-  );
 }
 
 function extractRetryWaitMs(detail: string, retryAfterHeader: string | null): number | null {
@@ -181,7 +238,23 @@ function extractRetryWaitMs(detail: string, retryAfterHeader: string | null): nu
 
 function shouldDropJsonObjectFormat(status: number, detail: string): boolean {
   if (status !== 400 && status !== 404 && status !== 422 && status !== 503) return false;
-  return /response_format|json_object|structured output|no endpoints found/i.test(detail);
+  return /response_format|json_object|json mode|structured output|no endpoints found/i.test(detail);
+}
+
+function shouldSwitchToMaxCompletionTokens(status: number, detail: string): boolean {
+  return status === 400 && /max_completion_tokens|max_tokens.*not supported/i.test(detail);
+}
+
+function shouldDropTemperature(status: number, detail: string): boolean {
+  return status === 400 && /temperature.*(?:not supported|only the default|must be 1)/i.test(detail);
+}
+
+function shouldShrinkTokenBudget(status: number, detail: string): boolean {
+  if (status === 413) return true;
+  if (status === 402 && /max_tokens|fewer max_tokens|afford/i.test(detail)) return true;
+  if (status === 400 && /max_tokens.*(?:exceed|maximum|limit|context)/i.test(detail)) return true;
+  if (status === 429 && /request too large|tokens per minute|tpm/i.test(detail)) return true;
+  return false;
 }
 
 function describeHttpStatusFa(status: number, model: string): string {
@@ -189,10 +262,13 @@ function describeHttpStatusFa(status: number, model: string): string {
     return `سرویس هوش مصنوعی موقتاً در دسترس نیست یا مدل «${model}» شلوغ است (HTTP ${status}).`;
   }
   if (status === 429) {
-    return `سقف تعداد درخواست سرویس هوش مصنوعی برای مدل «${model}» پر شده است (HTTP 429).`;
+    return `سقف تعداد درخواست یا توکن سرویس هوش مصنوعی برای مدل «${model}» پر شده است (HTTP 429).`;
   }
   if (status === 401 || status === 403) {
     return `کلید دسترسی یا مجوز سرویس هوش مصنوعی پذیرفته نشد (HTTP ${status}).`;
+  }
+  if (status === 402) {
+    return `اعتبار حساب سرویس هوش مصنوعی کافی نیست (HTTP 402).`;
   }
   if (status === 404) {
     return `مدل «${model}» یا آدرس سرویس هوش مصنوعی یافت نشد (HTTP 404).`;
@@ -217,23 +293,27 @@ export async function callAiChatCompletion(
     retryBaseDelayMs?: number;
   },
 ): Promise<CompletionResult> {
-  const apiKey = process.env.AI_API_KEY?.trim();
+  const apiKey = resolveAiApiKey();
 
   if (!apiKey) {
     return {
       ok: false,
       kind: "missing_key",
-      message: "کلید API برای هوش مصنوعی (AI_API_KEY) تنظیم نشده است.",
-      detail: null,
+      message: "کلید API برای هوش مصنوعی (AI_API_KEY) در تنظیمات سرور ثبت نشده است.",
+      detail: "در بخش Environment سرویس Render متغیر AI_API_KEY را مقداردهی کنید.",
     };
   }
 
-  const baseUrl = normalizeAiBaseUrl(process.env.AI_API_BASE_URL);
-  const model = resolveEffectiveModel(params.model);
+  const baseUrl = resolveEffectiveBaseUrl(apiKey);
+  const model = resolveEffectiveModel(params.model, { baseUrl, apiKey });
   const fetchFn = options?.fetchImpl ?? fetch;
   const retryBaseMs = options?.retryBaseDelayMs ?? 2_000;
 
   let useJsonObjectFormat = true;
+  let useMaxCompletionTokens = false;
+  let includeTemperature = true;
+  let effectiveMaxTokens = params.maxTokens;
+  let effectiveUserPrompt = params.userPrompt;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const controller = new AbortController();
@@ -252,12 +332,19 @@ export async function callAiChatCompletion(
           },
           {
             role: "user",
-            content: params.userPrompt,
+            content: effectiveUserPrompt,
           },
         ],
-        temperature: params.temperature,
-        max_tokens: params.maxTokens,
       };
+
+      if (includeTemperature) {
+        requestBody.temperature = params.temperature;
+      }
+      if (useMaxCompletionTokens) {
+        requestBody.max_completion_tokens = effectiveMaxTokens;
+      } else {
+        requestBody.max_tokens = effectiveMaxTokens;
+      }
       if (useJsonObjectFormat) {
         requestBody.response_format = { type: "json_object" };
       }
@@ -277,17 +364,42 @@ export async function callAiChatCompletion(
 
       if (!response.ok) {
         const rawErr = await response.text().catch(() => "");
-        const safeDetail = sanitizeSecrets(rawErr);
+        const safeDetail = sanitizeSecrets(rawErr, apiKey);
         const conciseReason = extractProviderErrorReason(safeDetail);
 
-        // Fallback once if the upstream model rejects `response_format: { type: "json_object" }`.
+        // 1) Reasoning-model compatibility: switch max_tokens -> max_completion_tokens / drop custom temperature
+        if (!useMaxCompletionTokens && shouldSwitchToMaxCompletionTokens(response.status, safeDetail) && attempt < MAX_RETRIES) {
+          useMaxCompletionTokens = true;
+          if (shouldDropTemperature(response.status, safeDetail)) includeTemperature = false;
+          continue;
+        }
+        if (includeTemperature && shouldDropTemperature(response.status, safeDetail) && attempt < MAX_RETRIES) {
+          includeTemperature = false;
+          continue;
+        }
+
+        // 2) Fallback once if the upstream model rejects `response_format: { type: "json_object" }`
         if (useJsonObjectFormat && shouldDropJsonObjectFormat(response.status, safeDetail) && attempt < MAX_RETRIES) {
           useJsonObjectFormat = false;
           console.warn(`[ai] Model "${model}" rejected json_object response_format (HTTP ${response.status}); retrying without it.`);
           continue;
         }
 
-        // Retry rate-limit (429) and transient server/overload statuses (500/502/503/504/529).
+        // 3) Free-tier TPM / OpenRouter credit cap fallback: shrink max_tokens and trim long article body
+        if (
+          effectiveMaxTokens > FALLBACK_COMPACT_MAX_TOKENS &&
+          shouldShrinkTokenBudget(response.status, safeDetail) &&
+          attempt < MAX_RETRIES
+        ) {
+          effectiveMaxTokens = FALLBACK_COMPACT_MAX_TOKENS;
+          if (effectiveUserPrompt.length > 4_000) {
+            effectiveUserPrompt = `${effectiveUserPrompt.slice(0, 4_000)}\n[...]`;
+          }
+          console.warn(`[ai] Shrinking max_tokens to ${FALLBACK_COMPACT_MAX_TOKENS} after HTTP ${response.status} for model "${model}".`);
+          continue;
+        }
+
+        // 4) Retry rate-limit (429) and transient server/overload statuses (500/502/503/504/529)
         if (TRANSIENT_HTTP_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
           const providerWaitMs = extractRetryWaitMs(safeDetail, response.headers.get("retry-after"));
           const fallbackBackoffMs =
@@ -318,8 +430,10 @@ export async function callAiChatCompletion(
         return {
           ok: false,
           kind: "api_error",
-          message: "پاسخ خالی از سرویس هوش مصنوعی دریافت شد.",
-          detail: null,
+          message: `پاسخ خالی از مدل «${model}» دریافت شد.`,
+          detail: payload?.choices?.[0]?.finish_reason
+            ? `finish_reason: ${String(payload.choices[0].finish_reason)}`
+            : null,
         };
       }
 
@@ -346,10 +460,10 @@ export async function callAiChatCompletion(
         kind: aborted ? "timeout" : "network_error",
         message: aborted
           ? `زمان درخواست هوش مصنوعی به پایان رسید (${REQUEST_TIMEOUT_MS}ms).`
-          : "خطای ارتباط با سرور هوش مصنوعی.",
+          : `خطای شبکه در اتصال به سرویس هوش مصنوعی (${baseUrl}).`,
         detail:
           error instanceof Error
-            ? sanitizeSecrets(error.message)
+            ? sanitizeSecrets(error.message, apiKey)
             : null,
       };
     }

@@ -530,8 +530,9 @@ async function executeScheduledPass(args: {
     if (failedAnalyses.length > 0) {
       const first = failedAnalyses[0];
       const reason = first.message ?? first.code ?? "ناموفق";
-      const rest = failedAnalyses.length > 1 ? ` (و ${failedAnalyses.length - 1} مورد دیگر)` : "";
-      errors.push(`تحلیل خبر: ${reason}${rest}`);
+      const detail = first.detail ? ` (${first.detail.slice(0, 180)})` : "";
+      const rest = failedAnalyses.length > 1 ? ` [و ${failedAnalyses.length - 1} مورد دیگر]` : "";
+      errors.push(`تحلیل خبر: ${reason}${detail}${rest}`);
     }
   } catch (error) {
     const detail = errorText(error);

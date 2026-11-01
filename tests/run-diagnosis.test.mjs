@@ -69,15 +69,17 @@ test("a fully failed ingest is explained", () => {
   assert.match(result?.title ?? "", /دریافت خبر/);
 });
 
-test("a fully failed analysis points at the AI configuration", () => {
+test("a fully failed analysis points at the AI configuration and surfaces the recorded error", () => {
   const result = diagnoseRunSummary(
     summary({
       analysis: { selected: 3, analyzed: 0, failed: 3, skippedOfftopic: 0 },
       send: { considered: 0, matched: 0, sent: 0, failed: 0 },
+      errors: ["تحلیل خبر: کلید API برای هوش مصنوعی (AI_API_KEY) در تنظیمات سرور ثبت نشده است."],
     }),
   );
   assert.equal(result?.level, "error");
   assert.match(result?.title ?? "", /تحلیل هوش مصنوعی/);
+  assert.match(result?.hints[0] ?? "", /علت دقیق ثبت‌شده.*AI_API_KEY/);
 });
 
 test("nothing considered -> informative empty-run message", () => {

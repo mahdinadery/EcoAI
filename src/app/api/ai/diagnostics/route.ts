@@ -2,6 +2,7 @@ import { checkAdminAccess } from "@/lib/admin/access";
 import {
   callAiChatCompletion,
   resolveAiApiKey,
+  resolveAiProxyUrl,
   resolveEffectiveBaseUrl,
   resolveEffectiveModel,
 } from "@/lib/ai/completion";
@@ -36,6 +37,7 @@ export async function POST(request: Request) {
   const startedAt = Date.now();
   const apiKey = resolveAiApiKey();
   const baseUrl = resolveEffectiveBaseUrl(apiKey);
+  const viaProxy = Boolean(resolveAiProxyUrl());
   const config = await getActiveAiConfig();
   const effectiveModel = resolveEffectiveModel(config.model, { baseUrl, apiKey });
 
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
       hasKey: false,
       keyHint: null,
       baseUrl,
+      viaProxy,
       configuredModel: config.model,
       effectiveModel,
       latencyMs: Date.now() - startedAt,
@@ -63,7 +66,7 @@ export async function POST(request: Request) {
       temperature: 0,
       maxTokens: 48,
     },
-    { timeoutMs: 20_000 },
+    { timeoutMs: 20_000, maxRetries: 0 },
   );
 
   const latencyMs = Date.now() - startedAt;
@@ -75,6 +78,7 @@ export async function POST(request: Request) {
       hasKey: true,
       keyHint: maskApiKey(apiKey),
       baseUrl,
+      viaProxy,
       configuredModel: config.model,
       effectiveModel,
       latencyMs,
@@ -90,6 +94,7 @@ export async function POST(request: Request) {
     hasKey: true,
     keyHint: maskApiKey(apiKey),
     baseUrl,
+    viaProxy,
     configuredModel: config.model,
     effectiveModel: completion.model || effectiveModel,
     latencyMs,

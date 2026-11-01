@@ -446,4 +446,5 @@ export const DEFAULT_AUTO_SEND_POLICY: AiAutoSendPolicy = {
   maxItemsPerPass: 20,
 };
 export const DEFAULT_TEMPERATURE = 0.2;
-export const DEFAULT_MAX_TOKENS = 3500;
+export const DEFAULT_MAX_TOKENS = 2000;
+export const LEGACY_DEFAULT_MAX_TOKENS = 3500;

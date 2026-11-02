@@ -5,12 +5,17 @@
  * is the configured bot actually able to post to the configured chat?
  *
  * The checks are intentionally read-only (`getMe` → `getChat` →
- * `getChatMember`). Nothing is sent here; the "test connection" button remains
- * the final proof. Every value returned to the browser is safe: the token is
- * never included and the chat id is masked.
+ * `getChatMember`, plus `getUpdates` discovery on 404). Nothing is sent here;
+ * the "test connection" button remains the final proof. Every value returned to
+ * the browser is safe: the token is never included.
  */
 
-import { callBaleApi } from "./client";
+import {
+  callBaleApi,
+  discoverBaleChatsFromUpdates,
+  normalizeBaleChatId,
+  resolveEffectiveBaleChatId,
+} from "./client";
 import { getDeliveryMode } from "./dispatcher";
 
 export type BaleCheckStatus = "ok" | "warning" | "error" | "skipped";
@@ -45,7 +50,7 @@ function trimToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-/** Keeps only the last four characters so the dashboard never prints the full id. */
+/** Keeps only the last four characters so the dashboard never prints the full id by default. */
 function maskChatId(value: string): string {
   if (value.length <= 4) return "••••";
   const visible = value.slice(-4);
@@ -106,8 +111,11 @@ function apiDetail(message: string, detail?: string): string {
 export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
   const checks: BaleCheck[] = [];
   const token = trimToUndefined(process.env.BALE_BOT_TOKEN);
-  const chatId = trimToUndefined(process.env.BALE_CHAT_ID);
+  const rawChatId = trimToUndefined(process.env.BALE_CHAT_ID);
+  const normalizedChatId = normalizeBaleChatId(rawChatId);
   const mode = getDeliveryMode();
+
+  const isInviteLink = Boolean(rawChatId && /ble\.ir\/join\//i.test(rawChatId));
 
   checks.push({
     id: "token",
@@ -122,11 +130,15 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
   checks.push({
     id: "chat_id",
     title: "شناسهٔ مقصد (BALE_CHAT_ID)",
-    status: chatId ? "ok" : "error",
-    detail: chatId ? `مقدار تنظیم‌شده: ${maskChatId(chatId)}` : "تنظیم نشده است.",
-    hint: chatId
-      ? undefined
-      : "برای کانال، @username یا آیدی عددی (مثل -100…) و برای چت خصوصی، آیدی عددی کاربر را ست کنید.",
+    status: !normalizedChatId || isInviteLink ? "error" : "ok",
+    detail: !normalizedChatId
+      ? "تنظیم نشده است."
+      : isInviteLink
+        ? `لینک دعوت خصوصی (ble.ir/join/...) قابل استفاده به‌عنوان BALE_CHAT_ID نیست.`
+        : `مقدار تنظیم‌شده: ${maskChatId(normalizedChatId)}`,
+    hint: !normalizedChatId || isInviteLink
+      ? "در بله بر خلاف تلگرام، مطمئن‌ترین مقدار برای BALE_CHAT_ID «شناسهٔ عددی کانال» (مثل 4812345678) است. یک پیام در کانال بفرستید و دوباره «بررسی کانال» را بزنید تا شناسهٔ عددی دقیق کانال استخراج شود."
+      : undefined,
   });
 
   checks.push({
@@ -143,8 +155,8 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
         : undefined,
   });
 
-  if (!token || !chatId) {
-    return finish(checks, chatId, mode);
+  if (!token || !normalizedChatId) {
+    return finish(checks, normalizedChatId, mode);
   }
 
   // 1) Token validity + the bot's own numeric id (needed by getChatMember).
@@ -160,7 +172,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
           ? "سرور به tapi.bale.ai دسترسی ندارد؛ اتصال خروجی میزبان را بررسی کنید."
           : "توکن ربات نامعتبر است؛ آن را از BotFather دوباره بگیرید و در میزبان به‌روزرسانی کنید.",
     });
-    return finish(checks, chatId, mode);
+    return finish(checks, normalizedChatId, mode);
   }
 
   const rawBotId = me.result?.id;
@@ -179,7 +191,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
       detail: "پاسخ getMe شناسهٔ ربات را برنگرداند.",
       hint: "پاسخ API بله را بررسی کنید و دوباره تلاش کنید.",
     });
-    return finish(checks, chatId, mode);
+    return finish(checks, normalizedChatId, mode);
   }
 
   const botUsername = typeof me.result.username === "string" ? `@${me.result.username}` : "بدون username";
@@ -191,26 +203,62 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
   });
 
   // 2) Can this bot see the configured chat at all?
-  const chat = await callBaleApi<{
+  let effectiveChatId = (await resolveEffectiveBaleChatId(normalizedChatId)) ?? normalizedChatId;
+  let chat = await callBaleApi<{
     id?: unknown;
     type?: unknown;
     title?: unknown;
     username?: unknown;
     first_name?: unknown;
-  }>("getChat", { chat_id: chatId });
+  }>("getChat", { chat_id: effectiveChatId });
 
-  if (!chat.ok || !chat.result) {
+  // If `@username` returned HTTP 404 ("no such group or user") — very common in Bale Bot API! —
+  // inspect `getUpdates` to auto-resolve or list all channels where this bot is active:
+  if (!chat.ok) {
+    const discovered = await discoverBaleChatsFromUpdates();
+    if (effectiveChatId.startsWith("@")) {
+      const handle = effectiveChatId.slice(1).toLowerCase();
+      const matched = discovered.find((c) => c.username?.toLowerCase() === handle);
+      if (matched) {
+        effectiveChatId = matched.id;
+        chat = await callBaleApi("getChat", { chat_id: effectiveChatId });
+      }
+    }
+
+    if (!chat.ok || !chat.result) {
+      const discoveredLines =
+        discovered.length > 0
+          ? `\nکانال‌ها/چت‌های شناسایی‌شده برای این بازو (مقدار عددی زیر را در BALE_CHAT_ID قرار دهید):\n` +
+            discovered
+              .map(
+                (c) =>
+                  `• ${chatTypeLabel(c.type)} «${c.title ?? "بدون نام"}»${c.username ? ` (@${c.username})` : ""} ← BALE_CHAT_ID=${c.id}`,
+              )
+              .join("\n")
+          : `\nبرای استخراج خودکار شناسهٔ عددی: ۱) مطمئن شوید بازو ${botUsername} در کانال ادمین است؛ ۲) یک پیام کوتاه (مثلاً «تست») داخل کانال بفرستید؛ ۳) دوباره دکمهٔ «بررسی کانال» را بزنید تا عدد دقیق BALE_CHAT_ID همین‌جا نمایش داده شود (یا در web.bale.ai وارد کانال شوید و عدد uid داخل آدرس مرورگر را بردارید).`;
+
+      checks.push({
+        id: "chat",
+        title: "دسترسی به مقصد",
+        status: "error",
+        detail: chat.ok ? "پاسخ getChat خالی بود." : apiDetail(chat.message, chat.detail),
+        hint:
+          !chat.ok && chat.kind === "network_error"
+            ? "سرور به tapi.bale.ai دسترسی ندارد؛ اتصال خروجی میزبان را بررسی کنید."
+            : `در API بله معمولاً به‌جای @آیدی متنی باید «شناسهٔ عددی کانال» (مثل 4812345678) را در BALE_CHAT_ID بگذارید (یا بازو هنوز در آن کانال ادمین نشده است).${discoveredLines}`,
+      });
+      return finish(checks, effectiveChatId, mode);
+    }
+  }
+
+  if (!chat.result) {
     checks.push({
       id: "chat",
       title: "دسترسی به مقصد",
       status: "error",
-      detail: chat.ok ? "پاسخ getChat خالی بود." : apiDetail(chat.message, chat.detail),
-      hint:
-        !chat.ok && chat.kind === "network_error"
-          ? "سرور به tapi.bale.ai دسترسی ندارد؛ اتصال خروجی میزبان را بررسی کنید."
-          : "BALE_CHAT_ID درست نیست یا ربات هنوز به کانال/گروه اضافه نشده است. ربات را عضو و در کانال ادمین کنید.",
+      detail: "پاسخ getChat خالی بود.",
     });
-    return finish(checks, chatId, mode);
+    return finish(checks, effectiveChatId, mode);
   }
 
   const chatType = typeof chat.result.type === "string" ? chat.result.type : "unknown";
@@ -229,7 +277,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
 
   // 3) Bot membership / admin rights in that chat.
   const member = await callBaleApi<{ status?: unknown; can_post_messages?: unknown }>("getChatMember", {
-    chat_id: chatId,
+    chat_id: effectiveChatId,
     user_id: botId,
   });
 
@@ -242,7 +290,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
       hint:
         "ربات را به کانال اضافه و به‌عنوان ادمین با دسترسی «ارسال پیام» انتخاب کنید. اگر مقصد گروه است، مطمئن شوید ربات عضو گروه است.",
     });
-    return finish(checks, chatId, mode);
+    return finish(checks, effectiveChatId, mode);
   }
 
   const memberStatus = typeof member.result.status === "string" ? member.result.status : "unknown";
@@ -283,5 +331,5 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
     });
   }
 
-  return finish(checks, chatId, mode);
+  return finish(checks, effectiveChatId, mode);
 }

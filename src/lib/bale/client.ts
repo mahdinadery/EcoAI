@@ -32,11 +32,21 @@ export type BaleApiResult<T> =
   | { ok: true; result: T | null }
   | { ok: false; kind: BaleErrorKind; message: string; detail?: string };
 
+export type DiscoveredBaleChat = {
+  id: string;
+  type: string;
+  title: string | null;
+  username: string | null;
+};
+
 type BaleApiEnvelope = {
   ok?: unknown;
   description?: unknown;
   result?: unknown;
 };
+
+// In-memory cache mapping normalized `@username` -> numeric `chat.id` discovered via `getUpdates`
+const resolvedUsernameChatIds = new Map<string, string>();
 
 function failure(kind: BaleErrorKind, message: string, detail?: string): BaleSendResult {
   return { ok: false, kind, message, detail };
@@ -49,6 +59,121 @@ function apiFailure(kind: BaleErrorKind, message: string, detail?: string): Bale
 function trimToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function toAsciiDigits(input: string): string {
+  return input
+    .replace(/[۰-۹]/g, (ch) => String(ch.charCodeAt(0) - 0x06f0))
+    .replace(/[٠-٩]/g, (ch) => String(ch.charCodeAt(0) - 0x0660));
+}
+
+/**
+ * Normalizes common `BALE_CHAT_ID` input formats into what Bale's Bot API expects:
+ * - Converts Persian/Arabic numerals (`۴۸۱۲...`) to ASCII (`4812...`)
+ * - Strips wrapping quotes (`"@my_channel"` -> `@my_channel`)
+ * - Converts `https://ble.ir/my_channel` or `ble.ir/my_channel` (excluding `/join/...` invite links) to `@my_channel`
+ * - Prepends `@` when an alphanumeric channel handle (`my_channel`) was entered without `@`
+ */
+export function normalizeBaleChatId(rawValue: string | undefined): string | undefined {
+  if (!rawValue) return undefined;
+  let cleaned = toAsciiDigits(rawValue)
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim();
+  if (!cleaned) return undefined;
+
+  // Strip `https://ble.ir/<handle>` when it is not a private `/join/...` invite link:
+  const bleLinkMatch = cleaned.match(/^(?:https?:\/\/)?(?:www\.)?ble\.ir\/(?!join\/)([A-Za-z][A-Za-z0-9_]{2,63})\/?$/i);
+  if (bleLinkMatch?.[1]) {
+    return `@${bleLinkMatch[1]}`;
+  }
+
+  // Numeric chat_id (positive 10-digit Bale channel/group/user ID or `-100...`):
+  if (/^-?\d+$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  // Already `@handle`:
+  if (cleaned.startsWith("@")) {
+    return cleaned.replace(/\/+$/, "");
+  }
+
+  // Bare handle without `@` (e.g. `ecoai_channel`):
+  if (/^[A-Za-z][A-Za-z0-9_]{2,63}$/.test(cleaned)) {
+    return `@${cleaned}`;
+  }
+
+  return cleaned;
+}
+
+/**
+ * Pure parser extracting unique channels/groups/chats from a Bale `getUpdates` result array.
+ */
+export function extractDiscoveredBaleChats(updates: unknown): DiscoveredBaleChat[] {
+  if (!Array.isArray(updates)) return [];
+  const byId = new Map<string, DiscoveredBaleChat>();
+
+  const candidateFields = [
+    "channel_post",
+    "edited_channel_post",
+    "message",
+    "edited_message",
+    "my_chat_member",
+    "chat_member",
+  ] as const;
+
+  for (const item of updates) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+
+    const chatObjects: Array<Record<string, unknown>> = [];
+    for (const field of candidateFields) {
+      const sub = record[field];
+      if (sub && typeof sub === "object") {
+        const chat = (sub as Record<string, unknown>).chat;
+        if (chat && typeof chat === "object") {
+          chatObjects.push(chat as Record<string, unknown>);
+        }
+      }
+    }
+    const cb = record.callback_query;
+    if (cb && typeof cb === "object") {
+      const msg = (cb as Record<string, unknown>).message;
+      if (msg && typeof msg === "object") {
+        const chat = (msg as Record<string, unknown>).chat;
+        if (chat && typeof chat === "object") {
+          chatObjects.push(chat as Record<string, unknown>);
+        }
+      }
+    }
+
+    for (const chat of chatObjects) {
+      const rawId = chat.id;
+      const id =
+        typeof rawId === "number" || typeof rawId === "string" ? String(rawId).trim() : "";
+      if (!id) continue;
+
+      const type = typeof chat.type === "string" ? chat.type : "unknown";
+      const title =
+        typeof chat.title === "string" && chat.title.trim()
+          ? chat.title.trim()
+          : typeof chat.first_name === "string" && chat.first_name.trim()
+            ? chat.first_name.trim()
+            : null;
+      const username =
+        typeof chat.username === "string" && chat.username.trim()
+          ? chat.username.trim().replace(/^@/, "")
+          : null;
+
+      if (username) {
+        resolvedUsernameChatIds.set(username.toLowerCase(), id);
+      }
+
+      byId.set(id, { id, type, title, username });
+    }
+  }
+
+  return [...byId.values()];
 }
 
 /**
@@ -74,14 +199,14 @@ function isAbortError(error: unknown): boolean {
 
 /** True when both required environment variables are present and non-empty. */
 export function isBaleConfigured(): boolean {
-  return Boolean(trimToUndefined(process.env.BALE_BOT_TOKEN) && trimToUndefined(process.env.BALE_CHAT_ID));
+  return Boolean(trimToUndefined(process.env.BALE_BOT_TOKEN) && normalizeBaleChatId(process.env.BALE_CHAT_ID));
 }
 
 /** Configuration diagnostics for the dashboard — never includes the token value. */
 export function getBaleConfigStatus(): { configured: boolean; missing: string[] } {
   const missing: string[] = [];
   if (!trimToUndefined(process.env.BALE_BOT_TOKEN)) missing.push("BALE_BOT_TOKEN");
-  if (!trimToUndefined(process.env.BALE_CHAT_ID)) missing.push("BALE_CHAT_ID");
+  if (!normalizeBaleChatId(process.env.BALE_CHAT_ID)) missing.push("BALE_CHAT_ID");
 
   return { configured: missing.length === 0, missing };
 }
@@ -157,10 +282,38 @@ export async function callBaleApi<T>(
 }
 
 /**
+ * Non-destructive read of recent bot updates (`getUpdates` without `offset` so
+ * updates are never consumed) to discover channels/groups where the bot is active
+ * and resolve `@username` -> numeric `chat_id` when Bale rejects `@username` with 404.
+ */
+export async function discoverBaleChatsFromUpdates(): Promise<DiscoveredBaleChat[]> {
+  const res = await callBaleApi<unknown[]>("getUpdates", { limit: 100 });
+  if (!res.ok || !Array.isArray(res.result)) return [];
+  return extractDiscoveredBaleChats(res.result);
+}
+
+export async function resolveEffectiveBaleChatId(rawChatId?: string): Promise<string | undefined> {
+  const normalized = normalizeBaleChatId(rawChatId ?? process.env.BALE_CHAT_ID);
+  if (!normalized) return undefined;
+  if (normalized.startsWith("@")) {
+    const cached = resolvedUsernameChatIds.get(normalized.slice(1).toLowerCase());
+    if (cached) return cached;
+  }
+  return normalized;
+}
+
+function isChatNotFoundError(res: BaleApiResult<unknown>): boolean {
+  if (res.ok) return false;
+  return /404|no such group or user|chat not found/i.test(`${res.message} ${res.detail ?? ""}`);
+}
+
+/**
  * Sends a text message to the configured Bale chat.
  *
  * Flow: env credentials -> `https://tapi.bale.ai/bot<token>/sendMessage` -> parsed
  * Telegram-compatible envelope -> safe success/error result.
+ * If Bale rejects `@username` with `404 (no such group or user)`, automatically
+ * attempts to resolve the numeric `chat_id` from `getUpdates`.
  */
 export async function sendBaleMessage(
   text: string,
@@ -175,23 +328,45 @@ export async function sendBaleMessage(
     return failure("missing_token", "BALE_BOT_TOKEN is not configured.");
   }
 
-  const chatId = trimToUndefined(process.env.BALE_CHAT_ID);
+  let chatId = await resolveEffectiveBaleChatId();
   if (!chatId) {
     return failure("missing_chat_id", "BALE_CHAT_ID is not configured.");
   }
 
-  const body: Record<string, unknown> = { chat_id: chatId, text: message };
-  if (options.parseMode) body.parse_mode = options.parseMode;
+  const sendOnce = async (targetChatId: string) => {
+    const body: Record<string, unknown> = { chat_id: targetChatId, text: message };
+    if (options.parseMode) body.parse_mode = options.parseMode;
 
-  let response = await callBaleApi<{ message_id?: unknown }>("sendMessage", body);
+    let res = await callBaleApi<{ message_id?: unknown }>("sendMessage", body);
 
-  // Hyperlinks must never cost a delivery: if Bale rejects the parse_mode
-  // (unbalanced markup in an operator's free-text template), retry as plain.
-  if (!response.ok && options.parseMode && (response.kind === "api_rejected" || response.kind === "http_error")) {
-    response = await callBaleApi<{ message_id?: unknown }>("sendMessage", {
-      chat_id: chatId,
-      text: message,
-    });
+    // Hyperlinks must never cost a delivery: if Bale rejects the parse_mode
+    // (unbalanced markup in an operator's free-text template), retry as plain.
+    if (!res.ok && options.parseMode && (res.kind === "api_rejected" || res.kind === "http_error") && !isChatNotFoundError(res)) {
+      res = await callBaleApi<{ message_id?: unknown }>("sendMessage", {
+        chat_id: targetChatId,
+        text: message,
+      });
+    }
+    return res;
+  };
+
+  let response = await sendOnce(chatId);
+
+  // Bale Bot API quirk: `@channel_username` often returns HTTP 404 ("no such group or user")
+  // whereas the numeric `chat_id` works. Auto-resolve via `getUpdates` when possible:
+  if (!response.ok && chatId.startsWith("@") && isChatNotFoundError(response)) {
+    const handle = chatId.slice(1).toLowerCase();
+    const discovered = await discoverBaleChatsFromUpdates();
+    const match =
+      discovered.find((c) => c.username?.toLowerCase() === handle) ??
+      (discovered.filter((c) => c.type === "channel").length === 1
+        ? discovered.find((c) => c.type === "channel")
+        : undefined);
+    if (match) {
+      resolvedUsernameChatIds.set(handle, match.id);
+      chatId = match.id;
+      response = await sendOnce(chatId);
+    }
   }
 
   if (!response.ok) {

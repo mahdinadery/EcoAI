@@ -297,7 +297,7 @@ export function BaleTestCard({ onTestComplete, adminKey = "" }: BaleTestCardProp
                   <p className="mt-1 break-words text-[11px] leading-5 text-muted">{check.detail}</p>
                 ) : null}
                 {check.hint ? (
-                  <p className="mt-1 text-[11px] leading-5 text-warn-ink">راهکار: {check.hint}</p>
+                  <p className="mt-1 whitespace-pre-line text-[11px] leading-5 text-warn-ink">راهکار: {check.hint}</p>
                 ) : null}
               </li>
             ))}

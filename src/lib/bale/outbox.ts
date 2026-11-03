@@ -8,6 +8,7 @@
 
 import { db } from "@/db";
 import { deliveries } from "@/db/schema";
+import { stripLegacyTitleFlag } from "@/lib/delivery/message";
 import { desc, inArray } from "drizzle-orm";
 
 export type OutboxStatus = "sent" | "failed" | "dry-run";
@@ -91,7 +92,7 @@ export async function listOutboxEntries(): Promise<OutboxEntry[]> {
 
     return {
       id: row.id,
-      text: row.message ?? "(بدون متن پیام)",
+      text: row.message ? stripLegacyTitleFlag(row.message) : "(بدون متن پیام)",
       status: row.status === "sent" ? "sent" : "failed",
       channel,
       trigger: (row.triggeredBy === "auto" ? "auto" : "manual") as "auto" | "manual",

@@ -23,6 +23,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getActiveAiConfig } from "@/lib/ai/config-service";
 import { deliverToBale } from "./bale";
 import { deliverToLocal } from "./local";
+import { stripLegacyTitleFlag } from "./message";
 import { renderPublishingMessage } from "./template";
 import { loadMessageExtras } from "./index";
 import type { DeliveryDestination } from "./types";
@@ -362,7 +363,7 @@ export async function sendDelivery(
     actor,
   );
 
-  const text = delivery.message;
+  const text = stripLegacyTitleFlag(delivery.message);
   let outcome: { ok: boolean; providerMessageId: string | null; errorMessage: string | null };
   try {
     outcome = delivery.destination === "bale" ? await deliverToBale(text) : await deliverToLocal(text);
@@ -581,7 +582,14 @@ export async function getDeliveryDetail(id: string) {
     .orderBy(desc(deliveryEvents.createdAt))
     .limit(50);
 
-  return { delivery: row.delivery, article: row.article, analysis: analysis ?? null, events };
+  return {
+    delivery: row.delivery.message
+      ? { ...row.delivery, message: stripLegacyTitleFlag(row.delivery.message) }
+      : row.delivery,
+    article: row.article,
+    analysis: analysis ?? null,
+    events,
+  };
 }
 
 /** Delivery summary per news id (news list / news detail). */

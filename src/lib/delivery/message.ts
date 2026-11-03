@@ -88,6 +88,14 @@ function compactMultiline(value: string | null | undefined, limit: number): stri
 }
 
 /**
+ * Strips any legacy leading Iran-flag prefix (`\u{1F1EE}\u{1F1F7}`) from
+ * pre-existing rendered messages stored in `deliveries` / outbox.
+ */
+export function stripLegacyTitleFlag(text: string): string {
+  return text.replace(/^\u{1F1EE}\u{1F1F7}[ \t]*/gmu, "");
+}
+
+/**
  * Renders a bilingual header (Persian translated title + original English
  * title) when `translatedTitle` is present and distinct from `title`. Falls
  * back to the single plain `title` when `translatedTitle` is absent/identical.
@@ -101,7 +109,7 @@ export function formatBilingualTitle(
   const transClean = (translatedTitle ?? "").replace(/\s+/g, " ").trim();
 
   if (transClean && origClean && transClean.toLowerCase() !== origClean.toLowerCase()) {
-    return `🇮🇷 ${escapeMd(compact(transClean, limit))}\n🌐 ${escapeMd(compact(origClean, limit))}`;
+    return `${escapeMd(compact(transClean, limit))}\n🌐 ${escapeMd(compact(origClean, limit))}`;
   }
 
   return escapeMd(compact(transClean || origClean, limit));

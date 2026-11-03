@@ -125,8 +125,12 @@ export function BaleTestCard({ onTestComplete, adminKey = "" }: BaleTestCardProp
       const kind = data?.kind ?? "unknown_error";
       setStatus("error");
       setMessage("ارسال پیام ناموفق بود.");
-      setDetail(configHint[kind] ?? data?.message ?? `پاسخ نامعتبر از سرور (HTTP ${response.status}).`);
+      const upstreamErr = [data?.message, data?.detail].filter(Boolean).join(" — ");
+      setDetail(configHint[kind] ?? (upstreamErr || `پاسخ نامعتبر از سرور (HTTP ${response.status}).`));
       onTestComplete?.();
+      // Auto-run read-only channel diagnostics so the operator immediately sees
+      // which @bot is configured on Render and any discovered numeric chat IDs:
+      void handleDiagnostics();
     } catch {
       setStatus("error");
       setMessage("ارسال پیام ناموفق بود.");

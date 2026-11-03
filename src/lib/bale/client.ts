@@ -45,7 +45,8 @@ type BaleApiEnvelope = {
   result?: unknown;
 };
 
-// In-memory cache mapping normalized `@username` -> numeric `chat.id` discovered via `getUpdates`
+// In-memory cache mapping raw/normalized `BALE_CHAT_ID` -> working `chat_id`
+const resolvedChatIdOverrides = new Map<string, string>();
 const resolvedUsernameChatIds = new Map<string, string>();
 
 function failure(kind: BaleErrorKind, message: string, detail?: string): BaleSendResult {
@@ -71,16 +72,27 @@ function toAsciiDigits(input: string): string {
  * Normalizes common `BALE_CHAT_ID` input formats into what Bale's Bot API expects:
  * - Converts Persian/Arabic numerals (`۴۸۱۲...`) to ASCII (`4812...`)
  * - Strips wrapping quotes (`"@my_channel"` -> `@my_channel`)
+ * - Extracts numeric IDs from `web.bale.ai` URLs (`https://web.bale.ai/chat?uid=4829104829` or `uid=44|4829104829`)
  * - Converts `https://ble.ir/my_channel` or `ble.ir/my_channel` (excluding `/join/...` invite links) to `@my_channel`
  * - Prepends `@` when an alphanumeric channel handle (`my_channel`) was entered without `@`
  */
 export function normalizeBaleChatId(rawValue: string | undefined): string | undefined {
   if (!rawValue) return undefined;
-  let cleaned = toAsciiDigits(rawValue)
+  const cleaned = toAsciiDigits(rawValue)
     .trim()
     .replace(/^["']+|["']+$/g, "")
     .trim();
   if (!cleaned) return undefined;
+
+  // Extract peer ID from `web.bale.ai` URLs or `uid=...` snippets (including `44|4829104829` / `%7C4829104829`):
+  const webUidMatch = cleaned.match(/(?:[?&]uid=|^uid=)(?:\d+(?:\||%7C))?(-?\d{5,20})\b/i);
+  if (webUidMatch?.[1]) {
+    return webUidMatch[1];
+  }
+  const pipePeerMatch = cleaned.match(/^\d+\|(-?\d{5,20})$/);
+  if (pipePeerMatch?.[1]) {
+    return pipePeerMatch[1];
+  }
 
   // Strip `https://ble.ir/<handle>` when it is not a private `/join/...` invite link:
   const bleLinkMatch = cleaned.match(/^(?:https?:\/\/)?(?:www\.)?ble\.ir\/(?!join\/)([A-Za-z][A-Za-z0-9_]{2,63})\/?$/i);
@@ -104,6 +116,39 @@ export function normalizeBaleChatId(rawValue: string | undefined): string | unde
   }
 
   return cleaned;
+}
+
+/**
+ * Generates ordered candidate `chat_id` encodings for Bale Bot API (`tapi.bale.ai`).
+ *
+ * Why needed: `web.bale.ai` URLs display positive peer IDs (e.g. `4829104829` or `1234567890`),
+ * whereas Telegram-compatible `tapi.bale.ai` endpoints expect `-100<peerId>` or `-<peerId>`
+ * (or conversely positive `<peerId>` when a user manually prefixed `-100`).
+ */
+export function candidateBaleChatIds(normalized: string): string[] {
+  const seen = new Set<string>();
+  const push = (val: string) => {
+    if (val && !seen.has(val)) seen.add(val);
+  };
+
+  push(normalized);
+
+  if (/^\d+$/.test(normalized)) {
+    push(`-100${normalized}`);
+    push(`-${normalized}`);
+  } else if (/^-100(\d+)$/.test(normalized)) {
+    const stem = normalized.slice(4);
+    push(stem);
+    push(`-${stem}`);
+  } else if (/^-(\d+)$/.test(normalized)) {
+    const stem = normalized.slice(1);
+    push(`-100${stem}`);
+    push(stem);
+  } else if (normalized.startsWith("@")) {
+    push(normalized.toLowerCase());
+  }
+
+  return [...seen];
 }
 
 /**
@@ -295,11 +340,39 @@ export async function discoverBaleChatsFromUpdates(): Promise<DiscoveredBaleChat
 export async function resolveEffectiveBaleChatId(rawChatId?: string): Promise<string | undefined> {
   const normalized = normalizeBaleChatId(rawChatId ?? process.env.BALE_CHAT_ID);
   if (!normalized) return undefined;
+  const cachedDirect = resolvedChatIdOverrides.get(normalized);
+  if (cachedDirect) return cachedDirect;
   if (normalized.startsWith("@")) {
     const cached = resolvedUsernameChatIds.get(normalized.slice(1).toLowerCase());
     if (cached) return cached;
   }
   return normalized;
+}
+
+export function rememberResolvedBaleChatId(normalizedInput: string, workingChatId: string): void {
+  if (normalizedInput && workingChatId) {
+    resolvedChatIdOverrides.set(normalizedInput, workingChatId);
+    if (normalizedInput.startsWith("@")) {
+      resolvedUsernameChatIds.set(normalizedInput.slice(1).toLowerCase(), workingChatId);
+    }
+  }
+}
+
+export function matchDiscoveredChat(
+  normalized: string,
+  discovered: readonly DiscoveredBaleChat[],
+): DiscoveredBaleChat | undefined {
+  if (discovered.length === 0) return undefined;
+  if (normalized.startsWith("@")) {
+    const handle = normalized.slice(1).toLowerCase();
+    const byHandle = discovered.find((c) => c.username?.toLowerCase() === handle);
+    if (byHandle) return byHandle;
+    const channels = discovered.filter((c) => c.type === "channel");
+    if (channels.length === 1) return channels[0];
+    return undefined;
+  }
+  const candidates = new Set(candidateBaleChatIds(normalized));
+  return discovered.find((c) => candidates.has(c.id));
 }
 
 function isChatNotFoundError(res: BaleApiResult<unknown>): boolean {
@@ -312,8 +385,8 @@ function isChatNotFoundError(res: BaleApiResult<unknown>): boolean {
  *
  * Flow: env credentials -> `https://tapi.bale.ai/bot<token>/sendMessage` -> parsed
  * Telegram-compatible envelope -> safe success/error result.
- * If Bale rejects `@username` with `404 (no such group or user)`, automatically
- * attempts to resolve the numeric `chat_id` from `getUpdates`.
+ * On `404 (no such group or user)`, automatically probes Bale's numeric prefix
+ * variants (`N`, `-100N`, `-N`), lowercase `@handle`, and `getUpdates` discovery.
  */
 export async function sendBaleMessage(
   text: string,
@@ -328,8 +401,9 @@ export async function sendBaleMessage(
     return failure("missing_token", "BALE_BOT_TOKEN is not configured.");
   }
 
-  let chatId = await resolveEffectiveBaleChatId();
-  if (!chatId) {
+  const normalizedInput = normalizeBaleChatId(process.env.BALE_CHAT_ID);
+  const initialChatId = await resolveEffectiveBaleChatId();
+  if (!normalizedInput || !initialChatId) {
     return failure("missing_chat_id", "BALE_CHAT_ID is not configured.");
   }
 
@@ -350,22 +424,34 @@ export async function sendBaleMessage(
     return res;
   };
 
-  let response = await sendOnce(chatId);
+  const candidates = candidateBaleChatIds(initialChatId);
+  let response = await sendOnce(candidates[0]);
 
-  // Bale Bot API quirk: `@channel_username` often returns HTTP 404 ("no such group or user")
-  // whereas the numeric `chat_id` works. Auto-resolve via `getUpdates` when possible:
-  if (!response.ok && chatId.startsWith("@") && isChatNotFoundError(response)) {
-    const handle = chatId.slice(1).toLowerCase();
+  if (!response.ok && isChatNotFoundError(response)) {
+    for (let i = 1; i < candidates.length; i++) {
+      const alt = await sendOnce(candidates[i]);
+      if (alt.ok) {
+        rememberResolvedBaleChatId(normalizedInput, candidates[i]);
+        response = alt;
+        break;
+      }
+      if (!isChatNotFoundError(alt)) {
+        response = alt;
+        break;
+      }
+    }
+  }
+
+  // If all direct/prefix candidates returned 404, try discovering the chat from `getUpdates`:
+  if (!response.ok && isChatNotFoundError(response)) {
     const discovered = await discoverBaleChatsFromUpdates();
-    const match =
-      discovered.find((c) => c.username?.toLowerCase() === handle) ??
-      (discovered.filter((c) => c.type === "channel").length === 1
-        ? discovered.find((c) => c.type === "channel")
-        : undefined);
-    if (match) {
-      resolvedUsernameChatIds.set(handle, match.id);
-      chatId = match.id;
-      response = await sendOnce(chatId);
+    const match = matchDiscoveredChat(normalizedInput, discovered);
+    if (match && !candidates.includes(match.id)) {
+      const viaDiscovery = await sendOnce(match.id);
+      if (viaDiscovery.ok) {
+        rememberResolvedBaleChatId(normalizedInput, match.id);
+        response = viaDiscovery;
+      }
     }
   }
 

@@ -12,8 +12,11 @@
 
 import {
   callBaleApi,
+  candidateBaleChatIds,
   discoverBaleChatsFromUpdates,
+  matchDiscoveredChat,
   normalizeBaleChatId,
+  rememberResolvedBaleChatId,
   resolveEffectiveBaleChatId,
 } from "./client";
 import { getDeliveryMode } from "./dispatcher";
@@ -56,6 +59,14 @@ function maskChatId(value: string): string {
   const visible = value.slice(-4);
   const hidden = "•".repeat(Math.min(12, Math.max(4, value.length - 4)));
   return `${hidden}${visible}`;
+}
+
+function describeChatIdShape(chatId: string): string {
+  if (/^-100\d+$/.test(chatId)) return `عددی با پیشوند -100 (${chatId.length} کاراکتر)`;
+  if (/^-\d+$/.test(chatId)) return `عددی منفی (${chatId.length} کاراکتر)`;
+  if (/^\d+$/.test(chatId)) return `عددی مثبت (${chatId.length} رقم)`;
+  if (chatId.startsWith("@")) return `آیدی متنی @ (${chatId.length} کاراکتر)`;
+  return `متنی (${chatId.length} کاراکتر)`;
 }
 
 function chatTypeLabel(type: string): string {
@@ -135,7 +146,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
       ? "تنظیم نشده است."
       : isInviteLink
         ? `لینک دعوت خصوصی (ble.ir/join/...) قابل استفاده به‌عنوان BALE_CHAT_ID نیست.`
-        : `مقدار تنظیم‌شده: ${maskChatId(normalizedChatId)}`,
+        : `مقدار تنظیم‌شده در سرور: ${maskChatId(normalizedChatId)} (${describeChatIdShape(normalizedChatId)})`,
     hint: !normalizedChatId || isInviteLink
       ? "در بله بر خلاف تلگرام، مطمئن‌ترین مقدار برای BALE_CHAT_ID «شناسهٔ عددی کانال» (مثل 4812345678) است. یک پیام در کانال بفرستید و دوباره «بررسی کانال» را بزنید تا شناسهٔ عددی دقیق کانال استخراج شود."
       : undefined,
@@ -203,7 +214,10 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
   });
 
   // 2) Can this bot see the configured chat at all?
-  let effectiveChatId = (await resolveEffectiveBaleChatId(normalizedChatId)) ?? normalizedChatId;
+  // Probe all Bale numeric/prefix variants (`N`, `-100N`, `-N`) + lowercase `@handle` + `getUpdates`:
+  const initialChatId = (await resolveEffectiveBaleChatId(normalizedChatId)) ?? normalizedChatId;
+  const candidates = candidateBaleChatIds(initialChatId);
+  let effectiveChatId = candidates[0];
   let chat = await callBaleApi<{
     id?: unknown;
     type?: unknown;
@@ -212,30 +226,53 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
     first_name?: unknown;
   }>("getChat", { chat_id: effectiveChatId });
 
-  // If `@username` returned HTTP 404 ("no such group or user") — very common in Bale Bot API! —
-  // inspect `getUpdates` to auto-resolve or list all channels where this bot is active:
+  if (!chat.ok) {
+    for (let i = 1; i < candidates.length; i++) {
+      const alt = await callBaleApi<{
+        id?: unknown;
+        type?: unknown;
+        title?: unknown;
+        username?: unknown;
+        first_name?: unknown;
+      }>("getChat", { chat_id: candidates[i] });
+      if (alt.ok && alt.result) {
+        effectiveChatId = candidates[i];
+        rememberResolvedBaleChatId(normalizedChatId, effectiveChatId);
+        chat = alt;
+        break;
+      }
+    }
+  }
+
   if (!chat.ok) {
     const discovered = await discoverBaleChatsFromUpdates();
-    if (effectiveChatId.startsWith("@")) {
-      const handle = effectiveChatId.slice(1).toLowerCase();
-      const matched = discovered.find((c) => c.username?.toLowerCase() === handle);
-      if (matched) {
+    const matched = matchDiscoveredChat(normalizedChatId, discovered);
+    if (matched && !candidates.includes(matched.id)) {
+      const viaDiscovery = await callBaleApi<{
+        id?: unknown;
+        type?: unknown;
+        title?: unknown;
+        username?: unknown;
+        first_name?: unknown;
+      }>("getChat", { chat_id: matched.id });
+      if (viaDiscovery.ok && viaDiscovery.result) {
         effectiveChatId = matched.id;
-        chat = await callBaleApi("getChat", { chat_id: effectiveChatId });
+        rememberResolvedBaleChatId(normalizedChatId, effectiveChatId);
+        chat = viaDiscovery;
       }
     }
 
     if (!chat.ok || !chat.result) {
       const discoveredLines =
         discovered.length > 0
-          ? `\nکانال‌ها/چت‌های شناسایی‌شده برای این بازو (مقدار عددی زیر را در BALE_CHAT_ID قرار دهید):\n` +
+          ? `\n✅ کانال‌ها/چت‌های دیده‌شده توسط بازوی ${botUsername} (همین عدد را در BALE_CHAT_ID قرار دهید):\n` +
             discovered
               .map(
                 (c) =>
                   `• ${chatTypeLabel(c.type)} «${c.title ?? "بدون نام"}»${c.username ? ` (@${c.username})` : ""} ← BALE_CHAT_ID=${c.id}`,
               )
               .join("\n")
-          : `\nبرای استخراج خودکار شناسهٔ عددی: ۱) مطمئن شوید بازو ${botUsername} در کانال ادمین است؛ ۲) یک پیام کوتاه (مثلاً «تست») داخل کانال بفرستید؛ ۳) دوباره دکمهٔ «بررسی کانال» را بزنید تا عدد دقیق BALE_CHAT_ID همین‌جا نمایش داده شود (یا در web.bale.ai وارد کانال شوید و عدد uid داخل آدرس مرورگر را بردارید).`;
+          : `\n⚠️ بازوی فعلی سرور (${botUsername}) هنوز هیچ پیامی در صف دریافت ندیده است:\n۱) چک کنید دقیقاً همین بازوی ${botUsername} در کانال شما «مدیر (Admin)» با تیک «ارسال پیام» باشد (نه فقط عضو عادی، و نه بازوی دیگر).\n۲) بعد از ادمین کردن بازو، یک پیام کوتاه (مثلاً یک نقطه «.») داخل کانال بفرستید.\n۳) دوباره همین دکمهٔ «بررسی کانال» را بزنید تا عدد دقیق BALE_CHAT_ID کانال شما خودکار استخراج و نمایش داده شود.`;
 
       checks.push({
         id: "chat",
@@ -245,7 +282,7 @@ export async function diagnoseBaleChannel(): Promise<BaleDiagnostics> {
         hint:
           !chat.ok && chat.kind === "network_error"
             ? "سرور به tapi.bale.ai دسترسی ندارد؛ اتصال خروجی میزبان را بررسی کنید."
-            : `در API بله معمولاً به‌جای @آیدی متنی باید «شناسهٔ عددی کانال» (مثل 4812345678) را در BALE_CHAT_ID بگذارید (یا بازو هنوز در آن کانال ادمین نشده است).${discoveredLines}`,
+            : `بازوی ${botUsername} مقصد فعلی را پیدا نکرد (فرمت‌های بررسی‌شده: ${candidates.length.toLocaleString("fa-IR")} حالت).${discoveredLines}`,
       });
       return finish(checks, effectiveChatId, mode);
     }

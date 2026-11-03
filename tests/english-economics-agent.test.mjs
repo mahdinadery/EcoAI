@@ -23,7 +23,7 @@ import {
   upgradeLegacySystemPrompt,
   upgradeLegacyTemplateFooter,
 } from "../src/lib/ai/config-types.ts";
-import { buildNewsMessage, formatBilingualTitle } from "../src/lib/delivery/message.ts";
+import { buildNewsMessage, formatBilingualTitle, stripLegacyTitleFlag } from "../src/lib/delivery/message.ts";
 import { buildBulletinMessage } from "../src/lib/delivery/bulletin.ts";
 import { similarityKeyOf } from "../src/lib/news/corroboration.ts";
 import { STEPS } from "../scripts/db-ensure.mjs";
@@ -183,10 +183,11 @@ test("parseAiOutput parses translatedTitle + structured 4-question Persian summa
     publishedAt: new Date("2026-10-28T10:00:00Z"),
   };
 
-  // 1) Default publishing template renders bilingual title + 4-line structured summary + whyItMatters (without redundant mainEvent)
+  // 1) Default publishing template renders bilingual title (without Iran flag) + 4-line structured summary + whyItMatters (without redundant mainEvent)
   const templated = renderPublishingMessage(DEFAULT_PUBLISHING_TEMPLATE, articleRow);
   assert.ok(templated.includes("📰 بازار کار و مشاغل"));
-  assert.ok(templated.includes("🇮🇷 هوش مصنوعی مولد و بهره‌وری نیروی کار: شواهد میدانی از مراکز پشتیبانی"));
+  assert.ok(templated.includes("هوش مصنوعی مولد و بهره‌وری نیروی کار: شواهد میدانی از مراکز پشتیبانی"));
+  assert.ok(!templated.includes("🇮🇷"), "must not render Iran flag emoji on translated title");
   assert.ok(templated.includes("🌐 Generative AI at Work"));
   assert.ok(templated.includes("❓ پرسش پژوهش:"));
   assert.ok(templated.includes("\n📊 داده‌ها:"));
@@ -202,12 +203,14 @@ test("parseAiOutput parses translatedTitle + structured 4-question Persian summa
   const customWithMain = renderPublishingMessage("{title}\nمحور: {mainEvent}", articleRow);
   assert.ok(customWithMain.includes("محور: افزایش ۱۴ درصدی بهره‌وری"));
 
-  // 2) Built-in fallback message preserves multiline structured summary + bilingual title
+  // 2) Built-in fallback message preserves multiline structured summary + bilingual title without flag
   const fallbackMsg = buildNewsMessage(articleRow);
-  assert.ok(fallbackMsg.includes("🇮🇷 هوش مصنوعی مولد و بهره‌وری نیروی کار"));
+  assert.ok(fallbackMsg.includes("هوش مصنوعی مولد و بهره‌وری نیروی کار"));
+  assert.ok(!fallbackMsg.includes("🇮🇷"), "fallback message must not render Iran flag emoji");
   assert.ok(fallbackMsg.includes("🌐 Generative AI at Work"));
   assert.ok(fallbackMsg.includes("❓ پرسش پژوهش:"));
   assert.ok(fallbackMsg.includes("\n📈 نتایج:"));
+  assert.equal(stripLegacyTitleFlag("📰 بازار کار\n\n🇮🇷 عنوان آزمایشی\n🌐 Test Title"), "📰 بازار کار\n\nعنوان آزمایشی\n🌐 Test Title");
 
   // 3) Bulletin preserves structured lines including `📈 نتایج:` without truncating at 300 chars
   const bulletinMsg = buildBulletinMessage({

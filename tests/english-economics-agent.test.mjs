@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import {
   composeArticleTextForAi,
   extractArticleTextFromHtml,
+  extractFirstParagraph,
   shouldFetchFullArticleText,
 } from "../src/lib/news/article-extractor-core.ts";
 import {
@@ -80,6 +81,22 @@ test("extractArticleTextFromHtml extracts clean analytical prose and strips nav/
   assert.ok(!extracted.includes("Subscribe now"));
   assert.ok(!extracted.includes("Menu item"));
   assert.ok(!extracted.includes("ignore me"));
+
+  // Academic abstract metadata (`citation_abstract`) + `extractFirstParagraph` skip bylines/headings cleanly:
+  const nberHtml = `
+    <html>
+      <head>
+        <meta name="citation_abstract" content="We quantify how large language models reshape occupational task wages and firm-level productivity across service industries." />
+      </head>
+      <body><div class="meta">Working Paper 33199</div></body>
+    </html>
+  `;
+  const nberExtracted = extractArticleTextFromHtml(nberHtml);
+  assert.ok(nberExtracted?.includes("large language models reshape occupational task wages"));
+  assert.equal(
+    extractFirstParagraph(`## Abstract\n\nby Daron Acemoglu\n\n${nberExtracted}`),
+    "We quantify how large language models reshape occupational task wages and firm-level productivity across service industries.",
+  );
 });
 
 test("shouldFetchFullArticleText triggers only for thin RSS snippets with http(s) URLs", () => {

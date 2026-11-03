@@ -11,7 +11,12 @@ import { and, eq, sql } from "drizzle-orm";
 import { mergeTokenUsage, resolveEffectiveModel, runAiAnalysis, type AiTokenUsage } from "../ai/client";
 import { gradeRelevanceWithUsage, isBorderlineRelevance } from "../ai/grader";
 import { getActiveAiConfig } from "../ai/config-service";
-import { composeArticleTextForAi, fetchArticleBody, shouldFetchFullArticleText } from "./article-extractor";
+import {
+  composeArticleTextForAi,
+  extractFirstParagraph,
+  fetchArticleBody,
+  shouldFetchFullArticleText,
+} from "./article-extractor";
 import { normalizeContent } from "./normalize";
 
 export type AnalyzeResult =
@@ -143,15 +148,18 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
 
   let settled = false;
   try {
-    // Enrich short RSS teasers by fetching readable article prose from the webpage.
-    let effectiveContent = article.content ?? article.normalizedContent ?? null;
-    if (
-      shouldFetchFullArticleText({
+    // Enrich short RSS teasers (or missing webpage `content`) by fetching readable
+    // article prose so AI never judges importance/relevance from the title alone.
+    let effectiveContent = (article.content || article.normalizedContent || "").trim() || null;
+    const needsWebFetch =
+      article.content !== "" &&
+      (shouldFetchFullArticleText({
         url: article.url,
         description: article.description,
         content: effectiveContent,
-      })
-    ) {
+      }) ||
+        (!effectiveContent && /^https?:\/\//i.test((article.url ?? "").trim())));
+    if (needsWebFetch) {
       const extracted = await fetchArticleBody(article.url);
       if (extracted && extracted.length > (effectiveContent ?? "").length) {
         effectiveContent = extracted;
@@ -225,13 +233,14 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
       reason,
     } = result.analysis;
 
-    // Borderline relevance gets ONE cheap second opinion.
+    // Borderline relevance gets ONE cheap second opinion — grounded in the first paragraph too.
     let relevanceGrade: string | null = null;
     let combinedUsage: AiTokenUsage | null = result.usage;
     if (isBorderlineRelevance(relevance, config.decisionRules)) {
       try {
         const gradeOutcome = await gradeRelevanceWithUsage({
           title: translatedTitle ? `${translatedTitle} (${article.title})` : article.title,
+          firstParagraph: extractFirstParagraph(effectiveContent ?? article.description),
           summary,
           audienceFocus: config.audienceFocus,
         });

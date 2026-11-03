@@ -13,13 +13,20 @@
 import { db } from "@/db";
 import { news } from "@/db/schema";
 import { readActiveOperationalSettings } from "@/lib/ai/config-service";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import type { AiTopicFilterConfig } from "@/lib/ai/config-types";
+import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { analyzeArticle } from "./analyze";
-import { evaluateTopicFilter, isTopicGateActive } from "./topic-filter";
+import { fetchArticleBody } from "./article-extractor";
+import { normalizeContent } from "./normalize";
+import { evaluateTopicFilter, evaluateWithFirstParagraphFallback, isTopicGateActive } from "./topic-filter";
 
 export const STALE_PROCESSING_MINUTES = 2;
 const DEFAULT_PASS_BUDGET_MS = 65_000;
 const SWEEP_BATCH_LIMIT = 250;
+const QUEUE_LEAD_CONCURRENCY = 4;
+const QUEUE_LEAD_TIMEOUT_MS = 4_500;
+const MAX_SWEEP_LEAD_PROBES = 8;
+const MAX_RESCUE_LEAD_PROBES = 6;
 
 export type QueuedAnalysisResult = {
   id: string;
@@ -49,18 +56,71 @@ export async function recoverStaleProcessing(now = new Date()): Promise<number> 
   }
 }
 
+async function probeWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+
+  async function worker(): Promise<void> {
+    while (cursor < items.length) {
+      const idx = cursor;
+      cursor += 1;
+      results[idx] = await fn(items[idx]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 /**
- * Last gate before the expensive AI stage. Non-matching rows are marked
- * SKIPPED_OFFTOPIC (still stored, re-queueable) and never reach the model.
- * Fails open when the filter is inactive.
+ * Persists the fetched webpage body (or `""` sentinel when unreachable/empty)
+ * so each URL's opening paragraph is checked at most once and rescued articles
+ * carry full text into `analyzeArticle` without a second HTTP fetch.
+ */
+async function persistProbedLead(
+  id: string,
+  currentDescription: string | null,
+  firstParagraph: string | null,
+  fetchedBody: string | null,
+  nextStatus?: "READY_FOR_AI" | "SKIPPED_OFFTOPIC",
+): Promise<void> {
+  const nextContent = fetchedBody ?? "";
+  const nextDescription =
+    firstParagraph && (!currentDescription || currentDescription.trim().length < 60)
+      ? firstParagraph.slice(0, 600)
+      : currentDescription;
+
+  try {
+    await db
+      .update(news)
+      .set({
+        content: nextContent,
+        description: nextDescription,
+        normalizedContent: fetchedBody ? normalizeContent(fetchedBody, nextDescription) : undefined,
+        ...(nextStatus ? { status: nextStatus } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(news.id, id));
+  } catch {
+    // Non-blocking bookkeeping
+  }
+}
+
+/**
+ * Last gate before the expensive AI stage. If a report fails on title/teaser
+ * alone (`not_in_selected_topics`), its opening paragraph is fetched and
+ * inspected before marking `SKIPPED_OFFTOPIC`.
  */
 export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: string[]; skipped: string[] }> {
   if (selectedIds.length === 0) return { pass: [], skipped: [] };
 
   const settings = await readActiveOperationalSettings();
   const filter = settings?.topicFilter ?? null;
-  // "Active" includes a deny-list-only configuration AND the always-on
-  // baseline deny-list, so this gate can never be skipped entirely.
   if (!isTopicGateActive(filter)) {
     return { pass: selectedIds, skipped: [] };
   }
@@ -68,6 +128,7 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
   const rows = await db
     .select({
       id: news.id,
+      url: news.url,
       title: news.title,
       description: news.description,
       content: news.content,
@@ -75,41 +136,110 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
     .from(news)
     .where(inArray(news.id, selectedIds));
 
+  const outcomes = await probeWithConcurrency(rows, QUEUE_LEAD_CONCURRENCY, async (row) => {
+    const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
+      fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
+    );
+    if (probed.checkedFirstParagraph) {
+      await persistProbedLead(
+        row.id,
+        row.description,
+        probed.firstParagraph,
+        probed.fetchedBody,
+        probed.outcome.verdict === "pass" ? undefined : "SKIPPED_OFFTOPIC",
+      );
+    }
+    return { id: row.id, checked: probed.checkedFirstParagraph, verdict: probed.outcome.verdict };
+  });
+
   const pass: string[] = [];
   const skipped: string[] = [];
-  for (const row of rows) {
-    const result = evaluateTopicFilter(row, filter);
-    if (result.verdict === "pass") pass.push(row.id);
-    else skipped.push(row.id);
+  const uncheckedSkipIds: string[] = [];
+  for (const item of outcomes) {
+    if (item.verdict === "pass") {
+      pass.push(item.id);
+    } else {
+      skipped.push(item.id);
+      if (!item.checked) uncheckedSkipIds.push(item.id);
+    }
   }
 
-  if (skipped.length > 0) {
+  if (uncheckedSkipIds.length > 0) {
     await db
       .update(news)
       .set({ status: "SKIPPED_OFFTOPIC", updatedAt: new Date() })
-      .where(inArray(news.id, skipped));
+      .where(inArray(news.id, uncheckedSkipIds));
   }
 
   return { pass, skipped };
 }
 
 /**
- * Sweeps pending unanalyzed articles (`READY_FOR_AI` and unanalyzed `FAILED`)
- * through the active topic filter in one fast in-memory pass so off-topic RSS
- * items (e.g. non-AI working papers from broad economics feeds) neither clog
- * `/news` nor consume the bounded per-run `maxAnalyze` slots.
+ * Re-inspects recent `SKIPPED_OFFTOPIC` articles whose webpage body was never
+ * checked (`content IS NULL`), promoting any whose opening paragraph matches
+ * the active topic filter back to `READY_FOR_AI`.
  */
-export async function sweepOfftopicBacklog(): Promise<{ swept: number }> {
+async function rescueTitleRejectedSkippedRows(filter: AiTopicFilterConfig | null): Promise<number> {
+  try {
+    const candidates = await db
+      .select({
+        id: news.id,
+        url: news.url,
+        title: news.title,
+        description: news.description,
+        content: news.content,
+      })
+      .from(news)
+      .where(
+        sql`${news.status} = 'SKIPPED_OFFTOPIC' AND ${news.analyzedAt} IS NULL AND ${news.content} IS NULL AND ${news.createdAt} >= now() - interval '72 hours'`,
+      )
+      .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
+      .limit(MAX_RESCUE_LEAD_PROBES);
+
+    if (candidates.length === 0) return 0;
+
+    let rescued = 0;
+    await probeWithConcurrency(candidates, QUEUE_LEAD_CONCURRENCY, async (row) => {
+      const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
+        fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
+      );
+      if (probed.outcome.verdict === "pass") {
+        rescued += 1;
+        await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody, "READY_FOR_AI");
+      } else if (probed.checkedFirstParagraph) {
+        await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody, "SKIPPED_OFFTOPIC");
+      } else {
+        // Hard blocked keyword or non-HTTP URL — mark sentinel so it is not re-scanned.
+        await persistProbedLead(row.id, row.description, null, null, "SKIPPED_OFFTOPIC");
+      }
+    });
+
+    return rescued;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Sweeps pending unanalyzed articles (`READY_FOR_AI` and unanalyzed `FAILED`)
+ * through the active topic filter, checking the webpage's **first paragraph**
+ * before rejecting title-ambiguous reports, and rescues recent title-only
+ * `SKIPPED_OFFTOPIC` items whose first paragraph proves relevant.
+ */
+export async function sweepOfftopicBacklog(): Promise<{ swept: number; rescued?: number }> {
   try {
     const settings = await readActiveOperationalSettings();
     const filter = settings?.topicFilter ?? null;
     if (!isTopicGateActive(filter)) {
-      return { swept: 0 };
+      return { swept: 0, rescued: 0 };
     }
+
+    const rescued = await rescueTitleRejectedSkippedRows(filter);
 
     const pendingRows = await db
       .select({
         id: news.id,
+        url: news.url,
         title: news.title,
         description: news.description,
         content: news.content,
@@ -118,28 +248,60 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number }> {
       .where(
         sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('READY_FOR_AI', 'FAILED')`,
       )
+      .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
       .limit(SWEEP_BATCH_LIMIT);
 
-    if (pendingRows.length === 0) return { swept: 0 };
+    if (pendingRows.length === 0) return { swept: 0, rescued };
 
-    const skippedIds: string[] = [];
+    const immediateSkipIds: string[] = [];
+    const needsLeadProbe: typeof pendingRows = [];
+
     for (const row of pendingRows) {
-      if (evaluateTopicFilter(row, filter).verdict !== "pass") {
-        skippedIds.push(row.id);
+      const initial = evaluateTopicFilter(row, filter);
+      if (initial.verdict === "pass") continue;
+      if (
+        initial.reason === "not_in_selected_topics" &&
+        row.content !== "" &&
+        (row.content ?? "").trim().length < 300 &&
+        needsLeadProbe.length < MAX_SWEEP_LEAD_PROBES
+      ) {
+        needsLeadProbe.push(row);
+      } else if (initial.reason !== "not_in_selected_topics" || row.content === "" || (row.content ?? "").trim().length >= 300) {
+        immediateSkipIds.push(row.id);
       }
+      // Items beyond `MAX_SWEEP_LEAD_PROBES` remain `READY_FOR_AI` until a
+      // subsequent sweep or `applyTopicGate` checks their first paragraph, so
+      // no report is ever rejected on its title alone without a lead check!
     }
 
-    if (skippedIds.length > 0) {
+    let probedSkipped = 0;
+    if (needsLeadProbe.length > 0) {
+      await probeWithConcurrency(needsLeadProbe, QUEUE_LEAD_CONCURRENCY, async (row) => {
+        const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
+          fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
+        );
+        if (probed.outcome.verdict === "pass") {
+          if (probed.checkedFirstParagraph) {
+            await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody);
+          }
+        } else {
+          probedSkipped += 1;
+          await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody, "SKIPPED_OFFTOPIC");
+        }
+      });
+    }
+
+    if (immediateSkipIds.length > 0) {
       await db
         .update(news)
         .set({ status: "SKIPPED_OFFTOPIC", updatedAt: new Date() })
-        .where(inArray(news.id, skippedIds));
+        .where(inArray(news.id, immediateSkipIds));
     }
 
-    return { swept: skippedIds.length };
+    return { swept: immediateSkipIds.length + probedSkipped, rescued };
   } catch (error) {
     console.error("[analysis-queue] off-topic sweep failed:", String(error).slice(0, 160));
-    return { swept: 0 };
+    return { swept: 0, rescued: 0 };
   }
 }
 

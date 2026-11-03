@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   BASELINE_BLOCKED_KEYWORDS,
   evaluateTopicFilter,
+  evaluateWithFirstParagraphFallback,
+  extractOpeningParagraphForGate,
   isTopicGateActive,
   isTopicFilterActive,
   keywordMatchesHaystack,
@@ -227,4 +229,115 @@ test("operator baseline override replaces defaults even when topic filter is off
   assert.equal(evaluateTopicFilter({ title: "نمونه ممنوع" }, custom).verdict, "skip");
   assert.equal(evaluateTopicFilter({ title: "Premier League match" }, { ...custom, baselineBlockedKeywords: [] }).verdict, "pass");
   assert.equal(evaluateTopicFilter({ title: "Premier League match" }, null).verdict, "skip");
+});
+
+test("evaluateWithFirstParagraphFallback rescues title-ambiguous reports when the opening paragraph is on-topic", async () => {
+  const aiFilter = filter({
+    topics: [
+      topic({
+        id: "ai-econ",
+        label: "اقتصاد هوش مصنوعی",
+        keywords: ["artificial intelligence", "generative ai", "large language model"],
+      }),
+    ],
+  });
+
+  let fetchCalls = 0;
+  const rescued = await evaluateWithFirstParagraphFallback(
+    {
+      url: "https://www.nber.org/papers/w33100",
+      title: "Tasks, Wages, and the Future of White-Collar Work",
+      description: "by Daron Acemoglu, Pascual Restrepo",
+      content: null,
+    },
+    aiFilter,
+    async () => {
+      fetchCalls += 1;
+      return [
+        "## Abstract",
+        "by Daron Acemoglu, Pascual Restrepo",
+        "We study the macroeconomic and labor-market consequences of generative artificial intelligence across administrative task records in US firms over the next decade.",
+        "Subsequent sections calibrate capital deepening and total factor productivity.",
+      ].join("\n\n");
+    },
+  );
+
+  assert.equal(fetchCalls, 1);
+  assert.equal(rescued.checkedFirstParagraph, true);
+  assert.equal(rescued.outcome.verdict, "pass");
+  assert.deepEqual(rescued.outcome.matchedTopics, ["اقتصاد هوش مصنوعی"]);
+  assert.ok(rescued.firstParagraph?.includes("generative artificial intelligence"));
+});
+
+test("evaluateWithFirstParagraphFallback inspects only the opening paragraph and ignores bottom-of-page noise", async () => {
+  const aiFilter = filter({
+    topics: [
+      topic({
+        id: "ai-econ",
+        label: "اقتصاد هوش مصنوعی",
+        keywords: ["generative ai", "artificial intelligence"],
+      }),
+    ],
+  });
+
+  const genuinelyOfftopic = await evaluateWithFirstParagraphFallback(
+    {
+      url: "https://www.nber.org/papers/w33101",
+      title: "Grain Tariffs and Rural Land Values in Nineteenth-Century France",
+      description: "by Pierre Blanc",
+      content: null,
+    },
+    aiFilter,
+    async () =>
+      [
+        "This paper examines how the Meline tariff of 1892 altered agricultural land rents, wheat prices, and internal rural migration across French departements using newly digitized cadastral records from 1875 to 1910.",
+        "Second paragraph discusses regional railroad freight costs and grain market integration.",
+        "Footer teaser far below: Read more in our generative AI working group.",
+      ].join("\n\n"),
+  );
+
+  assert.equal(genuinelyOfftopic.checkedFirstParagraph, true);
+  assert.equal(genuinelyOfftopic.outcome.verdict, "skip");
+  assert.equal(genuinelyOfftopic.outcome.reason, "not_in_selected_topics");
+});
+
+test("evaluateWithFirstParagraphFallback skips network fetch when title already matches, hits deny-list, or has empty sentinel", async () => {
+  const aiFilter = filter({
+    topics: [topic({ id: "ai-econ", label: "اقتصاد هوش مصنوعی", keywords: ["generative ai"] })],
+  });
+
+  let calls = 0;
+  const neverCalled = async () => {
+    calls += 1;
+    return "generative ai paragraph";
+  };
+
+  // 1) Already matches on title -> 0 fetches
+  const directPass = await evaluateWithFirstParagraphFallback(
+    { url: "https://example.com/1", title: "Generative AI and Firm Productivity", content: null },
+    aiFilter,
+    neverCalled,
+  );
+  assert.equal(directPass.outcome.verdict, "pass");
+  assert.equal(directPass.checkedFirstParagraph, false);
+
+  // 2) Blocked keyword in title -> 0 fetches
+  const blocked = await evaluateWithFirstParagraphFallback(
+    { url: "https://example.com/2", title: "Premier League Final Preview", content: null },
+    aiFilter,
+    neverCalled,
+  );
+  assert.equal(blocked.outcome.verdict, "skip");
+  assert.equal(blocked.checkedFirstParagraph, false);
+
+  // 3) Empty-string sentinel (`content === ""`) -> already probed previously -> 0 fetches
+  const alreadyProbed = await evaluateWithFirstParagraphFallback(
+    { url: "https://example.com/3", title: "Ambiguous Macro Headline", content: "" },
+    aiFilter,
+    neverCalled,
+  );
+  assert.equal(alreadyProbed.outcome.verdict, "skip");
+  assert.equal(alreadyProbed.checkedFirstParagraph, false);
+  assert.equal(calls, 0);
+  assert.equal(extractOpeningParagraphForGate("## Heading\nby Jane Doe"), null);
 });

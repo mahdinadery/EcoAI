@@ -89,7 +89,50 @@ function isBoilerplateParagraph(text: string): boolean {
   return false;
 }
 
+function extractAcademicAbstractMeta(html: string): string | null {
+  const head = /<head[\s>][\s\S]*?<\/head>/i.exec(html)?.[0] ?? html.slice(0, 20_000);
+  const abstractPatterns = [
+    /<meta[^>]+(?:property|name)\s*=\s*["'](?:citation_abstract|dc\.description|dcterms\.abstract)["'][^>]*content\s*=\s*["']([^"']+)["']/i,
+    /<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*?(?:property|name)\s*=\s*["'](?:citation_abstract|dc\.description|dcterms\.abstract)["']/i,
+  ];
+  for (const pattern of abstractPatterns) {
+    const raw = pattern.exec(head)?.[1];
+    if (raw) {
+      const cleaned = stripTagsToPlain(raw);
+      if (cleaned.length >= 45) return cleaned.slice(0, 2_500);
+    }
+  }
+  return null;
+}
+
+function extractJsonLdLead(html: string): string | null {
+  const scripts = html.match(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi) ?? [];
+  for (const block of scripts.slice(0, 4)) {
+    const inner = block.replace(/^<script\b[^>]*>/i, "").replace(/<\/script\s*>$/i, "").trim();
+    if (!inner) continue;
+    try {
+      const parsed = JSON.parse(inner) as Record<string, unknown> | Array<Record<string, unknown>>;
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of items) {
+        for (const field of ["abstract", "articleBody", "description"] as const) {
+          const val = item?.[field];
+          if (typeof val === "string") {
+            const cleaned = stripTagsToPlain(val);
+            if (cleaned.length >= 60) return cleaned.slice(0, 2_500);
+          }
+        }
+      }
+    } catch {
+      // malformed JSON-LD on third-party sites is ignored safely
+    }
+  }
+  return null;
+}
+
 function extractMetaDescription(html: string): string | null {
+  const academic = extractAcademicAbstractMeta(html);
+  if (academic) return academic;
+
   const head = /<head[\s>][\s\S]*?<\/head>/i.exec(html)?.[0] ?? html.slice(0, 12_000);
   const patterns = [
     /<meta[^>]+(?:property|name)\s*=\s*["'](?:og:description|twitter:description|description)["'][^>]*content\s*=\s*["']([^"']+)["']/i,
@@ -99,10 +142,10 @@ function extractMetaDescription(html: string): string | null {
     const raw = pattern.exec(head)?.[1];
     if (raw) {
       const cleaned = stripTagsToPlain(raw);
-      if (cleaned.length >= 40) return cleaned.slice(0, 1_000);
+      if (cleaned.length >= 40) return cleaned.slice(0, 1_200);
     }
   }
-  return null;
+  return extractJsonLdLead(html);
 }
 
 /**
@@ -111,6 +154,8 @@ function extractMetaDescription(html: string): string | null {
  */
 export function extractArticleTextFromHtml(html: string | null | undefined): string | null {
   if (!html || typeof html !== "string") return null;
+
+  const academicAbstract = extractAcademicAbstractMeta(html);
 
   // Strip comments and non-prose containers first.
   const stripped = html
@@ -123,7 +168,7 @@ export function extractArticleTextFromHtml(html: string | null | undefined): str
   const bodyMatch = /<body\b[^>]*>([\s\S]*?)<\/body\s*>/i.exec(stripped)?.[1];
 
   const candidateRegions = [articleMatch, mainMatch, bodyMatch, stripped].filter(
-    (region): region is string => Boolean(region && region.trim().length > 120),
+    (region): region is string => Boolean(region && region.trim().length > 100),
   );
 
   for (const region of candidateRegions) {
@@ -146,14 +191,60 @@ export function extractArticleTextFromHtml(html: string | null | undefined): str
     }
 
     const joined = paragraphs.join("\n\n").trim();
-    if (joined.length >= 250) {
-      return joined.length <= MAX_EXTRACTED_BODY_CHARS
-        ? joined
-        : `${joined.slice(0, MAX_EXTRACTED_BODY_CHARS).trimEnd()}…`;
+    if (joined.length >= 120) {
+      const withAbstract =
+        academicAbstract && !joined.toLowerCase().includes(academicAbstract.slice(0, 90).toLowerCase())
+          ? `${academicAbstract}\n\n${joined}`
+          : joined;
+      return withAbstract.length <= MAX_EXTRACTED_BODY_CHARS
+        ? withAbstract
+        : `${withAbstract.slice(0, MAX_EXTRACTED_BODY_CHARS).trimEnd()}…`;
     }
   }
 
   return extractMetaDescription(html);
+}
+
+const BYLINE_OR_META_LINE = /^(?:by\s+[A-Z\u0600-\u06FF]|working\s+paper\s+\d+|doi\s*:|jel\s*(?:codes?|classification|no)\b|published\s+(?:on|in)\b|author[s]?\s*:)/i;
+
+/**
+ * Extracts the opening substantive paragraph (or short standfirst + first body
+ * paragraph) of a report/article, skipping headings, author bylines (`"by ..."`),
+ * and boilerplate lines so title-rejected reports can be judged by their true
+ * opening paragraph rather than footer links or author metadata.
+ */
+export function extractFirstParagraph(
+  text: string | null | undefined,
+  maxChars = 900,
+): string | null {
+  if (!text || typeof text !== "string") return null;
+
+  const rawBlocks = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}|\n/)
+    .map((line) => line.replace(/[ \t\u00A0]+/g, " ").trim())
+    .filter(Boolean);
+
+  const substantive: string[] = [];
+  for (const block of rawBlocks) {
+    if (block.startsWith("## ") || block.startsWith("# ")) continue;
+    if (block.length < 40) continue;
+    if (block.length < 140 && BYLINE_OR_META_LINE.test(block)) continue;
+    if (isBoilerplateParagraph(block)) continue;
+    substantive.push(block);
+    if (substantive.length >= 2) break;
+  }
+
+  if (substantive.length === 0) return null;
+
+  // If the first paragraph is a brief deck/standfirst (< 220 chars) and a second
+  // paragraph follows immediately, inspect both together as the opening lead.
+  const combined =
+    substantive[0].length < 220 && substantive[1]
+      ? `${substantive[0]} ${substantive[1]}`
+      : substantive[0];
+
+  return combined.length <= maxChars ? combined : `${combined.slice(0, maxChars).trimEnd()}…`;
 }
 
 /**

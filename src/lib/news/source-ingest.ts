@@ -20,13 +20,17 @@ import { ingestionRuns, news, newsSources, type NewsSourceRow } from "@/db/schem
 import { readActiveOperationalSettings } from "@/lib/ai/config-service";
 import type { AiTopicFilterConfig } from "@/lib/ai/config-types";
 import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { fetchArticleBody } from "./article-extractor";
 import { canonicalizeUrl } from "./canonical-url";
 import { similarityKeyOf } from "./corroboration";
 import { normalizeContent, normalizeTitle } from "./normalize";
 import { fetchFeed, parseFeed, type NewsFetchResult, type NormalizedNews } from "./rss";
-import { evaluateTopicFilter, isTopicGateActive } from "./topic-filter";
+import { evaluateTopicFilter, evaluateWithFirstParagraphFallback, isTopicGateActive } from "./topic-filter";
 
 const CHUNK_SIZE = 50;
+const LEAD_CHECK_CONCURRENCY = 4;
+const LEAD_FETCH_TIMEOUT_MS = 4_500;
+const MAX_LEAD_CHECKS_PER_FEED = 10;
 
 /**
  * Max sources fetched at the same time. Geo-blocked hosts can hold a socket
@@ -61,15 +65,15 @@ type Candidate = {
 };
 
 /**
- * Stage: topic relevance gate (cheap keyword rules, BEFORE AI). Returns the
- * partition of fresh candidates; skipped ones are still stored (marked
- * SKIPPED_OFFTOPIC) so nothing is silently discarded and re-queueing stays
- * possible after the topics change. Fails open when the filter is inactive.
+ * Stage: topic relevance gate (cheap keyword rules, BEFORE AI) with second-chance
+ * **first-paragraph inspection** for reports whose title/RSS teaser did not
+ * reveal topic relevance. Only after inspecting the opening paragraph of the
+ * webpage is an item marked `SKIPPED_OFFTOPIC`.
  */
-function partitionByTopic(
+async function partitionByTopic(
   fresh: Candidate[],
   topicFilter: AiTopicFilterConfig | null,
-): { pass: Candidate[]; skip: Candidate[] } {
+): Promise<{ pass: Candidate[]; skip: Candidate[] }> {
   if (fresh.length === 0) return { pass: fresh, skip: [] };
 
   if (!isTopicGateActive(topicFilter)) {
@@ -78,6 +82,8 @@ function partitionByTopic(
 
   const pass: Candidate[] = [];
   const skip: Candidate[] = [];
+  const needsLeadCheck: Candidate[] = [];
+
   for (const candidate of fresh) {
     const result = evaluateTopicFilter(
       {
@@ -87,9 +93,53 @@ function partitionByTopic(
       },
       topicFilter,
     );
-    if (result.verdict === "pass") pass.push(candidate);
-    else skip.push(candidate);
+    if (result.verdict === "pass") {
+      pass.push(candidate);
+    } else if (result.reason === "not_in_selected_topics" && (candidate.item.content ?? "").trim().length < 300) {
+      needsLeadCheck.push(candidate);
+    } else {
+      skip.push(candidate);
+    }
   }
+
+  if (needsLeadCheck.length > 0) {
+    const toProbe = needsLeadCheck.slice(0, MAX_LEAD_CHECKS_PER_FEED);
+    const overflow = needsLeadCheck.slice(MAX_LEAD_CHECKS_PER_FEED);
+
+    const probed = await mapWithConcurrency(toProbe, LEAD_CHECK_CONCURRENCY, async (candidate) =>
+      evaluateWithFirstParagraphFallback(
+        {
+          url: candidate.item.url,
+          title: candidate.item.title,
+          description: candidate.item.description,
+          content: candidate.item.content,
+        },
+        topicFilter,
+        (url) => fetchArticleBody(url, LEAD_FETCH_TIMEOUT_MS),
+      ),
+    );
+
+    for (let index = 0; index < toProbe.length; index += 1) {
+      const candidate = toProbe[index];
+      const settled = probed[index];
+      if (settled.status === "fulfilled") {
+        const { outcome, checkedFirstParagraph, firstParagraph, fetchedBody } = settled.value;
+        if (checkedFirstParagraph) {
+          candidate.item.content = fetchedBody ?? "";
+          if (firstParagraph && (!candidate.item.description || candidate.item.description.trim().length < 60)) {
+            candidate.item.description = firstParagraph.slice(0, 600);
+          }
+        }
+        if (outcome.verdict === "pass") pass.push(candidate);
+        else skip.push(candidate);
+      } else {
+        skip.push(candidate);
+      }
+    }
+
+    skip.push(...overflow);
+  }
+
   return { pass, skip };
 }
 
@@ -363,9 +413,9 @@ export async function ingestFromSource(source: NewsSourceRow): Promise<PipelineR
     const { fresh, duplicateRefs } = await partitionDuplicates(candidates, source.name);
 
     // Cheap topic gate BEFORE anything AI-related: filtered rows are stored as
-    // SKIPPED_OFFTOPIC and excluded from newArticleIds (the AI work queue).
+    // SKIPPED_OFFTOPIC (only after checking the first paragraph) and excluded from newArticleIds.
     const topicFilter = await loadTopicFilter();
-    const { pass, skip } = partitionByTopic(fresh, topicFilter);
+    const { pass, skip } = await partitionByTopic(fresh, topicFilter);
 
     const { created, filteredCreated, duplicateRowsStored, newArticleIds } = await storeCandidates(
       pass,
@@ -454,7 +504,7 @@ export async function ingestViaPipeline(): Promise<
     }
 
     const topicFilter = await loadTopicFilter();
-    const { pass, skip } = partitionByTopic(fresh, topicFilter);
+    const { pass, skip } = await partitionByTopic(fresh, topicFilter);
 
     const { created, filteredCreated } = await storeCandidates(pass, duplicateRefs, skip, matchingSource ?? null, {
       sourceName: fetched.source,
@@ -539,7 +589,7 @@ export async function ingestSearchItems(
 
   // Same cheap topic gate as feeds — search results can be off-topic noise.
   const topicFilter = await loadTopicFilter();
-  const { pass, skip } = partitionByTopic(fresh, topicFilter);
+  const { pass, skip } = await partitionByTopic(fresh, topicFilter);
 
   const { created, filteredCreated, newArticleIds } = await storeCandidates(
     pass,
@@ -727,7 +777,7 @@ export async function ingestFeedXml(
     }
 
     const topicFilter = await loadTopicFilter();
-    const { pass, skip } = partitionByTopic(fresh, topicFilter);
+    const { pass, skip } = await partitionByTopic(fresh, topicFilter);
 
     const { created, filteredCreated } = await storeCandidates(pass, duplicateRefs, skip, source, { sourceName: parsed.source });
     const duplicates = Math.max(candidates.length - created - filteredCreated, 0);

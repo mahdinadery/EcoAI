@@ -204,6 +204,134 @@ export function evaluateTopicFilter(
     : { verdict: "skip", reason: "not_in_selected_topics", matchedTopics: [] };
 }
 
+const GATE_BYLINE_OR_META =
+  /^(?:by\s+[A-Z\u0600-\u06FF]|working\s+paper\s+\d+|doi\s*:|jel\s*(?:codes?|classification|no)\b|published\s+(?:on|in)\b|author[s]?\s*:)/i;
+
+/**
+ * Dependency-free extractor for the opening substantive paragraph of a fetched
+ * article body (kept inside `topic-filter.ts` so Node's native test runner can
+ * import this file without relative runtime imports).
+ */
+export function extractOpeningParagraphForGate(
+  text: string | null | undefined,
+  maxChars = 900,
+): string | null {
+  if (!text || typeof text !== "string") return null;
+
+  const blocks = text
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}|\n/)
+    .map((line) => line.replace(/[ \t\u00A0]+/g, " ").trim())
+    .filter(Boolean);
+
+  const picked: string[] = [];
+  for (const block of blocks) {
+    if (block.startsWith("## ") || block.startsWith("# ")) continue;
+    if (block.length < 40) continue;
+    if (block.length < 140 && GATE_BYLINE_OR_META.test(block)) continue;
+    picked.push(block);
+    if (picked.length >= 2) break;
+  }
+
+  if (picked.length === 0) return null;
+
+  const combined =
+    picked[0].length < 220 && picked[1] ? `${picked[0]} ${picked[1]}` : picked[0];
+  return combined.length <= maxChars ? combined : `${combined.slice(0, maxChars).trimEnd()}…`;
+}
+
+export type FirstParagraphFallbackResult = {
+  outcome: TopicFilterOutcome;
+  checkedFirstParagraph: boolean;
+  firstParagraph: string | null;
+  fetchedBody: string | null;
+};
+
+/**
+ * Two-stage topic gate:
+ *   1. Evaluates the report's title + existing RSS snippet.
+ *   2. If rejected solely because no topic keyword appeared in the title/snippet
+ *      (`reason === "not_in_selected_topics"`) and full article content has not
+ *      been checked yet, fetches the report webpage, extracts its **first
+ *      substantive paragraph** (abstract / lead paragraph), and re-evaluates
+ *      before deciding to reject (`SKIPPED_OFFTOPIC`).
+ *
+ * Hard deny-list hits (`matched_blocked_keyword` / `matched_excluded_topic` on
+ * the title itself) are rejected immediately without wasting network calls.
+ */
+export async function evaluateWithFirstParagraphFallback(
+  article: TopicFilterArticle & { url?: string | null },
+  filter: AiTopicFilterConfig | null | undefined,
+  fetchBody: (url: string) => Promise<string | null>,
+): Promise<FirstParagraphFallbackResult> {
+  const initial = evaluateTopicFilter(article, filter);
+
+  if (initial.verdict === "pass" || initial.reason !== "not_in_selected_topics") {
+    return {
+      outcome: initial,
+      checkedFirstParagraph: false,
+      firstParagraph: null,
+      fetchedBody: null,
+    };
+  }
+
+  // `article.content === ""` serves as a persisted sentinel meaning an earlier
+  // pass already tried fetching the webpage and found no readable body; rich
+  // content (`>= 300` chars) was already inspected in `initial`.
+  const existingContent = article.content;
+  if (existingContent === "" || (existingContent ?? "").trim().length >= 300) {
+    return {
+      outcome: initial,
+      checkedFirstParagraph: false,
+      firstParagraph: extractOpeningParagraphForGate(existingContent),
+      fetchedBody: null,
+    };
+  }
+
+  const url = (article.url ?? "").trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return {
+      outcome: initial,
+      checkedFirstParagraph: false,
+      firstParagraph: null,
+      fetchedBody: null,
+    };
+  }
+
+  let fetchedBody: string | null = null;
+  try {
+    fetchedBody = await fetchBody(url);
+  } catch {
+    fetchedBody = null;
+  }
+
+  const firstParagraph = extractOpeningParagraphForGate(fetchedBody);
+  if (!firstParagraph) {
+    return {
+      outcome: initial,
+      checkedFirstParagraph: true,
+      firstParagraph: null,
+      fetchedBody,
+    };
+  }
+
+  const secondOutcome = evaluateTopicFilter(
+    {
+      title: article.title,
+      description: article.description,
+      content: firstParagraph,
+    },
+    filter,
+  );
+
+  return {
+    outcome: secondOutcome,
+    checkedFirstParagraph: true,
+    firstParagraph,
+    fetchedBody,
+  };
+}
+
 /** True when the filter would actually narrow anything (used to skip work entirely). */
 export function isTopicFilterActive(filter: AiTopicFilterConfig | null | undefined): boolean {
   if (!filter || !filter.enabled) return false;

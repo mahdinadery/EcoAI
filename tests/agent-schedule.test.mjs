@@ -252,3 +252,29 @@ test('bulletin does not backfill yesterday before first slot today', () => {
   const config = schedule({publishMode:'bulletin',bulletinTimes:['08:00']});
   assert.equal(computeDueBulletinSlot({now:new Date('2026-10-28T01:00:00Z'),config,lastBulletinSlot:'B2026-10-27T08:00'}).due,false);
 });
+
+test('per-item schedule catches up after multi-hour GitHub Actions cron delay without backfilling older slots', () => {
+  const config = schedule({ times: ['08:00', '20:00'] });
+  const cronGrace = effectiveGraceMinutes(config.times, 8 * 60); // 480m (< 12h gap)
+  assert.equal(cronGrace, 480);
+
+  // Tick delayed by 4.5 hours (12:30 Tehran === 09:00 UTC): 08:00 slot still catches up!
+  const delayed = computeDueSlot({
+    now: new Date('2026-10-28T09:00:00Z'),
+    config,
+    lastRunSlot: '2026-10-27T20:00',
+    graceMinutes: cronGrace,
+  });
+  assert.equal(delayed.due, true);
+  assert.equal(delayed.slotKey, '2026-10-28T08:00');
+
+  // Once a later slot (20:00) ran, an earlier slot of the same day never re-runs.
+  const noBackfill = computeDueSlot({
+    now: new Date('2026-10-28T17:00:00Z'), // 20:30 Tehran
+    config,
+    lastRunSlot: '2026-10-28T20:00',
+    graceMinutes: cronGrace,
+  });
+  assert.equal(noBackfill.due, false);
+  assert.equal(noBackfill.reason, 'already_ran');
+});

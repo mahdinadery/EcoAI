@@ -128,9 +128,25 @@ export function AutoSendCard({
                   {rule.enabled ? "ارسال خودکار: فعال" : "غیرفعال"}
                 </StatusBadge>
               ) : null}
+              {rule && rule.enabled ? (
+                <StatusBadge tone={rule.destination === "local" ? "warning" : "success"}>
+                  {rule.destination === "local"
+                    ? "مقصد: فقط صندوق محلی (بدون ارسال به بله)"
+                    : `مقصد: ${destinationLabel}`}
+                </StatusBadge>
+              ) : null}
             </div>
             <p className="mt-1 text-sm text-muted">
-              هر خبری که شرایط مشخص‌شده (اهمیت ≥ {rule?.thresholds?.minImportance ?? 50}٪ و مرتبط بودن ≥ {rule?.thresholds?.minRelevance ?? 50}٪) را داشته باشد، خودکار به صندوق خروجی ارسال می‌شود.
+              هر خبری که شرایط مشخص‌شده (اهمیت ≥ {rule?.thresholds?.minImportance ?? 50}٪ و مرتبط بودن ≥ {rule?.thresholds?.minRelevance ?? 50}٪) را داشته باشد، خودکار به {destinationLabel} ارسال می‌شود.
+              {rule?.destination === "local" ? (
+                <span className="mt-1 block text-xs text-warn-ink">
+                  توجه: مقصد پیش‌فرض این بخش روی «صندوق محلی» است؛ برای ارسال خودکار واقعی به کانال بله، یا از کارت «ارسال خودکار زمان‌بندی‌شده» بالا استفاده کنید یا متغیر{" "}
+                  <code className="rounded bg-surface-2 px-1 font-mono text-[11px]" dir="ltr">
+                    AUTO_SEND_DESTINATION=bale
+                  </code>{" "}
+                  را در Render قرار دهید.
+                </span>
+              ) : null}
             </p>
           </div>
         </div>

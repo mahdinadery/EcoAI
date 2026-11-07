@@ -342,7 +342,7 @@ export function computeDueSlot(args: {
     if (nowMinutes < minutes || nowMinutes >= minutes + grace) continue;
 
     const slotKey = `${dateKey}T${time}`;
-    if (lastRunSlot === slotKey) {
+    if (lastRunSlot && lastRunSlot >= slotKey) {
       alreadyRan = true;
       continue;
     }

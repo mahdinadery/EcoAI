@@ -211,6 +211,43 @@ export function ScheduleCard({
     void load();
   }, [load]);
 
+  // While the dashboard tab is open and scheduling is enabled, also poll the
+  // tick endpoint (`?source=browser`) once a minute so due slots fire on time
+  // even before external GitHub Actions secrets (`APP_URL`) are configured,
+  // without masking the `cronStale` warning for background execution.
+  useEffect(() => {
+    if (!hydrated || !config.enabled) return;
+    let cancelled = false;
+
+    async function browserTick() {
+      try {
+        const res = await fetch("/api/agent/scheduler/tick?source=browser", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders(adminKey) },
+          body: "{}",
+        });
+        if (!res.ok || cancelled) return;
+        const payload = (await res.json()) as { ran?: boolean };
+        if (payload.ran && !cancelled) {
+          await load();
+          onRunComplete?.();
+        }
+      } catch {
+        // Non-blocking background poll while tab is open
+      }
+    }
+
+    void browserTick();
+    const intervalId = setInterval(() => {
+      void browserTick();
+    }, 60_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [adminKey, config.enabled, hydrated, load, onRunComplete]);
+
   const nextRunLabel = useMemo(
     () => formatInZone(status?.nextRunAt ?? null, config.timezone),
     [status?.nextRunAt, config.timezone],

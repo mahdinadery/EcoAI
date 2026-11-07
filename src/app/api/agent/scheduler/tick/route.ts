@@ -5,6 +5,7 @@ import {
   computeNextBulletinRun,
   computeNextRun,
   coerceScheduleConfig,
+  effectiveGraceMinutes,
 } from "@/lib/agent/schedule";
 import {
   claimBulletinSlot,
@@ -43,16 +44,30 @@ export async function POST(request: Request) {
     return Response.json({ success: false, message: access.reason }, { status: 401 });
   }
 
-  // Liveness heartbeat FIRST: the dashboard shows "the cron is alive" even
-  // when no slot is due — this is what proves the channel runs without the
-  // operator's browser being open.
-  await markTickSeen();
+  const reqUrl = new URL(request.url);
+  const isBrowserTick = reqUrl.searchParams.get("source") === "browser";
+
+  // Liveness heartbeat FIRST (only for external cron calls, not open browser tabs):
+  // the dashboard shows "the cron is alive" only when GitHub Actions / external
+  // scheduler actually called this endpoint.
+  if (!isBrowserTick) {
+    await markTickSeen();
+  }
 
   const record = await readScheduleRecord();
   const config = coerceScheduleConfig(record);
   const now = new Date();
 
-  const due = computeDueSlot({ now, config, lastRunSlot: record.lastRunSlot });
+  // GitHub Actions free-tier `schedule` workflows routinely lag by 3–7 hours
+  // under load; allow up to 8 hours (480m) of same-day catch-up bounded by the
+  // minimum gap between consecutive slots so dense schedules never overlap.
+  const cronGraceMinutes = effectiveGraceMinutes(config.times, 8 * 60);
+  const due = computeDueSlot({
+    now,
+    config,
+    lastRunSlot: record.lastRunSlot,
+    graceMinutes: cronGraceMinutes,
+  });
   const bulletinDue = computeDueBulletinSlot({ now, config, lastBulletinSlot: record.lastBulletinSlot });
 
   if (!due.due && !bulletinDue.due) {

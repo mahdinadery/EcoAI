@@ -14,19 +14,20 @@ import { db } from "@/db";
 import { news } from "@/db/schema";
 import { readActiveOperationalSettings } from "@/lib/ai/config-service";
 import type { AiTopicFilterConfig } from "@/lib/ai/config-types";
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { analyzeArticle } from "./analyze";
 import { fetchArticleBody } from "./article-extractor";
+import { DEFAULT_AI_CONCURRENCY, runBoundedConcurrentPool } from "./concurrent-pool";
 import { normalizeContent } from "./normalize";
 import { evaluateTopicFilter, evaluateWithFirstParagraphFallback, isTopicGateActive } from "./topic-filter";
 
 export const STALE_PROCESSING_MINUTES = 2;
-const DEFAULT_PASS_BUDGET_MS = 65_000;
-const SWEEP_BATCH_LIMIT = 250;
-const QUEUE_LEAD_CONCURRENCY = 4;
+const DEFAULT_PASS_BUDGET_MS = 56_000;
+const SWEEP_BATCH_LIMIT = 500;
+const QUEUE_LEAD_CONCURRENCY = 8;
 const QUEUE_LEAD_TIMEOUT_MS = 4_500;
-const MAX_SWEEP_LEAD_PROBES = 8;
-const MAX_RESCUE_LEAD_PROBES = 6;
+const MAX_SWEEP_LEAD_PROBES = 14;
+const MAX_RESCUE_LEAD_PROBES = 10;
 
 export type QueuedAnalysisResult = {
   id: string;
@@ -47,7 +48,9 @@ export async function recoverStaleProcessing(now = new Date()): Promise<number> 
     const released = await db
       .update(news)
       .set({ status: "READY_FOR_AI", updatedAt: new Date() })
-      .where(and(eq(news.status, "AI_PROCESSING"), lt(news.updatedAt, staleBefore)))
+      .where(
+        sql`(${news.status} = 'AI_PROCESSING' AND ${news.updatedAt} < ${staleBefore}) OR (${news.status} = 'FETCHED' AND ${news.analyzedAt} IS NULL)`,
+      )
       .returning({ id: news.id });
     return released.length;
   } catch (error) {
@@ -359,45 +362,40 @@ function isFatalProviderConfigFailure(
 }
 
 /**
- * Sequential, failure-isolated analysis (the provider has a low TPM limit).
- * Stops early if:
- *  - a fatal provider key/auth/endpoint error occurs (no point hammering N more items), or
- *  - the pass time budget (`maxDurationMs`, default 55s) is reached so HTTP callers
- *    return cleanly before reverse-proxy timeouts (~100s on Render).
+ * Bounded-concurrency, failure-isolated AI analysis (defaults to 4 parallel
+ * workers so research papers enter the pipeline ~4x faster while respecting
+ * reverse-proxy timeouts and fatal-error circuit breaking).
  */
 export async function analyzeSequentially(
   ids: string[],
-  options: { maxDurationMs?: number } = {},
+  options: { maxDurationMs?: number; concurrency?: number } = {},
 ): Promise<QueuedAnalysisResult[]> {
-  const results: QueuedAnalysisResult[] = [];
-  const startedAt = Date.now();
   const maxDurationMs = options.maxDurationMs ?? DEFAULT_PASS_BUDGET_MS;
+  const concurrency = options.concurrency ?? DEFAULT_AI_CONCURRENCY;
 
-  for (const id of ids) {
-    if (results.length > 0 && Date.now() - startedAt >= maxDurationMs) {
-      break;
-    }
-
-    try {
-      const analysis = await analyzeArticle(id);
-      const entry: QueuedAnalysisResult = {
-        id,
-        ok: analysis.ok,
-        code: analysis.ok ? null : analysis.code,
-        message: analysis.ok ? null : analysis.message,
-        detail: analysis.ok ? null : (analysis.detail ?? null),
-      };
-      results.push(entry);
-
-      if (!entry.ok && isFatalProviderConfigFailure(entry.code, entry.message, entry.detail)) {
-        break;
+  return runBoundedConcurrentPool(
+    ids,
+    async (id): Promise<QueuedAnalysisResult> => {
+      try {
+        const analysis = await analyzeArticle(id);
+        return {
+          id,
+          ok: analysis.ok,
+          code: analysis.ok ? null : analysis.code,
+          message: analysis.ok ? null : analysis.message,
+          detail: analysis.ok ? null : (analysis.detail ?? null),
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error("[analysis-queue] article analysis failed:", detail.slice(0, 200));
+        return { id, ok: false, code: "analysis_error", message: detail, detail: null };
       }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error("[analysis-queue] article analysis failed:", detail.slice(0, 200));
-      results.push({ id, ok: false, code: "analysis_error", message: detail, detail: null });
-    }
-  }
-
-  return results;
+    },
+    {
+      concurrency,
+      maxDurationMs,
+      shouldAbort: (entry) =>
+        !entry.ok && isFatalProviderConfigFailure(entry.code, entry.message, entry.detail),
+    },
+  );
 }

@@ -370,7 +370,7 @@ export const agentSchedules = pgTable("agent_schedules", {
   minRelevance: integer("min_relevance").notNull().default(50),
   minNovelty: integer("min_novelty").notNull().default(0),
   requireAiRecommendation: boolean("require_ai_recommendation").notNull().default(false),
-  maxAnalyze: integer("max_analyze").notNull().default(8),
+  maxAnalyze: integer("max_analyze").notNull().default(20),
   maxSend: integer("max_send").notNull().default(10),
   lastRunAt: timestamp("last_run_at", { withTimezone: true, mode: "date" }),
   lastRunSlot: text("last_run_slot"),

@@ -141,7 +141,7 @@ function defaultConfig(): ScheduleConfig {
     minRelevance: 50,
     minNovelty: 0,
     requireAiRecommendation: false,
-    maxAnalyze: 8,
+    maxAnalyze: 20,
     maxSend: 10,
     gapSearchEnabled: false,
     gapSearchQueries: [],

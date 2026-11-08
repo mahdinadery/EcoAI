@@ -28,13 +28,13 @@ export const ADMIN_PAGE_SIZE = 20;
 function buildWhere(filters: AdminNewsFilters) {
   const conditions = [];
 
-  // The admin list can opt into seeing DUPLICATE / SKIPPED_OFFTOPIC / FETCHED rows;
-  // the default view keeps archived/duplicate/off-topic rows out of operational noise.
+  // The admin list can opt into seeing DUPLICATE / SKIPPED_OFFTOPIC rows; the
+  // default view keeps them out of the operational list noise.
   const statuses = filters.status && NEWS_STATUSES.includes(filters.status as NewsStatus) ? [filters.status] : null;
   conditions.push(
     statuses
       ? sql`${news.status} IN (${sql.join(statuses.map((s) => sql`${s}`), sql`, `)})}`
-      : sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC', 'FETCHED')`,
+      : sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
   );
 
   if (filters.q?.trim()) {

@@ -9,8 +9,9 @@ import {
 import { ingestNews } from "@/lib/news/ingest";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-const MAX_AI_ITEMS_PER_RUN = 4;
+const MAX_AI_ITEMS_PER_RUN = 16;
 
 /**
  * POST /api/news/fetch
@@ -71,9 +72,11 @@ export async function POST(request: Request) {
     const gated = await applyTopicGate(selectedIds);
     const aiQueue = gated.pass;
 
-    // IMPORTANT: keep AI calls sequential. This is intentional because the
-    // provider has a low TPM limit.
-    const analysisResults = await analyzeSequentially(aiQueue);
+    // Analyze up to 16 articles per fetch pass using 4 concurrent workers.
+    const analysisResults = await analyzeSequentially(aiQueue, {
+      concurrency: 4,
+      maxDurationMs: 52_000,
+    });
 
     // Auto-send only articles that were actually analyzed during this run.
     const analyzedIds = analysisResults

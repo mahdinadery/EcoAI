@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { canonicalizeUrl } from "../src/lib/news/canonical-url.ts";
-import { isStaleArchiveDate } from "../src/lib/news/status.ts";
+import { runBoundedConcurrentPool } from "../src/lib/news/concurrent-pool.ts";
 import { buildNewsMessage } from "../src/lib/delivery/message.ts";
 import { DEFAULT_AUTO_SEND_POLICY, DEFAULT_TOPIC_FILTER } from "../src/lib/ai/config-types.ts";
 
@@ -46,11 +46,49 @@ test("default topic filter is inactive (fail-open) and default policy is env-dri
   assert.equal(DEFAULT_AUTO_SEND_POLICY.destination, "local");
 });
 
-test("isStaleArchiveDate flags RSS items older than 7 days while keeping recent or undated items active", () => {
-  const now = Date.UTC(2026, 9, 29, 12, 0, 0);
-  assert.equal(isStaleArchiveDate(null, now), false);
-  assert.equal(isStaleArchiveDate(new Date(now - 2 * 86_400_000), now), false);
-  assert.equal(isStaleArchiveDate(new Date(now - 7 * 86_400_000), now), false);
-  assert.equal(isStaleArchiveDate(new Date(now - 8 * 86_400_000), now), true);
-  assert.equal(isStaleArchiveDate(new Date("2026-08-01T00:00:00Z"), now), true);
+test("runBoundedConcurrentPool processes up to N items concurrently and preserves input order", async () => {
+  let active = 0;
+  let peakActive = 0;
+  const items = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"];
+
+  const results = await runBoundedConcurrentPool(
+    items,
+    async (id, idx) => {
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      await new Promise((resolve) => setTimeout(resolve, idx % 2 === 0 ? 18 : 6));
+      active -= 1;
+      return `${id}-done`;
+    },
+    { concurrency: 4 },
+  );
+
+  assert.equal(peakActive, 4);
+  assert.deepEqual(results, items.map((id) => `${id}-done`));
+});
+
+test("runBoundedConcurrentPool trips circuit breaker on fatal errors and respects maxDurationMs", async () => {
+  const started = [];
+  const res = await runBoundedConcurrentPool(
+    [1, 2, 3, 4, 5, 6],
+    async (n) => {
+      started.push(n);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { n, fatal: n === 2 };
+    },
+    { concurrency: 2, shouldAbort: (r) => r.fatal },
+  );
+  assert.ok(started.length <= 3);
+  assert.ok(res.some((r) => r.fatal));
+
+  let fakeNow = 1_000;
+  const timed = await runBoundedConcurrentPool(
+    ["a", "b", "c", "d", "e"],
+    async (x) => {
+      fakeNow += 300;
+      return x;
+    },
+    { concurrency: 2, maxDurationMs: 500, nowFn: () => fakeNow },
+  );
+  assert.deepEqual(timed, ["a", "b"]);
 });

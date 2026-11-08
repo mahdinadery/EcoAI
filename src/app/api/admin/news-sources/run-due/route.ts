@@ -11,15 +11,15 @@ import { runDueSources } from "@/lib/news/source-ingest";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MAX_DRAIN_PER_DUE_TICK = 3;
+const MAX_DRAIN_PER_DUE_TICK = 12;
 
 /**
  * POST /api/admin/news-sources/run-due
  *
  * Fetches every ACTIVE rss source whose `fetchIntervalMinutes` has elapsed,
- * then drains a small bounded batch (`MAX_DRAIN_PER_DUE_TICK = 3`, max 38s) of
- * pending `READY_FOR_AI` articles so the 15-minute `scheduled-ingest` cron
- * continuously shrinks the analysis queue instead of letting items pile up.
+ * then drains a bounded parallel batch (`MAX_DRAIN_PER_DUE_TICK = 12`, max 46s,
+ * 4 concurrent workers) of pending `READY_FOR_AI` papers so the 15-minute
+ * `scheduled-ingest` cron drains ~48 papers/hour automatically.
  */
 export async function POST(request: Request) {
   const access = checkAdminAccess(request);
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     const gated = await applyTopicGate(backlogIds);
     const analyzedResults =
       gated.pass.length > 0
-        ? await analyzeSequentially(gated.pass, { maxDurationMs: 38_000 })
+        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 46_000 })
         : [];
     const analyzedIds = analyzedResults.filter((item) => item.ok).map((item) => item.id);
     const autoSend = analyzedIds.length > 0 ? await maybeRunAutoSend(analyzedIds) : null;

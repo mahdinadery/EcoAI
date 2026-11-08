@@ -1,7 +1,10 @@
 import { db } from "@/db";
 import { news } from "@/db/schema";
 import { checkAdminAccess } from "@/lib/admin/access";
-import { maybeRunAutoSend } from "@/lib/agent/auto-hook";
+import { runAutoDeliveryPass } from "@/lib/agent";
+import { maybeRunAutoSend, type AutoSendSummary } from "@/lib/agent/auto-hook";
+import { describeRejectionReasons } from "@/lib/agent/rejection-reasons";
+import { resolveAutoSendRule } from "@/lib/agent/resolve-rule";
 import {
   createAiConfigVersion,
   getActiveAiConfig,
@@ -30,15 +33,11 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 type QueueActionBody = {
-  action?: "analyze_batch" | "apply_ai_pack_filter" | "retry_failed";
+  action?: "analyze_batch" | "apply_ai_pack_filter" | "retry_failed" | "send_ready_to_bale";
   limit?: number;
   concurrency?: number;
 };
 
-/**
- * Ensures any previously sidelined `FETCHED` unanalyzed papers are restored to
- * `READY_FOR_AI` so research papers are never dropped based on publication age.
- */
 async function restoreSidelinedUnanalyzed(): Promise<number> {
   const restored = await db
     .update(news)
@@ -46,6 +45,35 @@ async function restoreSidelinedUnanalyzed(): Promise<number> {
     .where(sql`${news.analyzedAt} IS NULL AND ${news.status} = 'FETCHED'`)
     .returning({ id: news.id });
   return restored.length;
+}
+
+function explainZeroSend(autoSend: AutoSendSummary | null): string {
+  if (!autoSend) return "";
+  if (autoSend.sent > 0) {
+    const targetLabel =
+      autoSend.destination === "bale"
+        ? "کانال بله"
+        : autoSend.destination === "both"
+          ? "بله و صندوق محلی"
+          : "صندوق محلی (Local — نه بله!)";
+    return ` و ${autoSend.sent} پیام به ${targetLabel} ارسال شد`;
+  }
+  if (autoSend.heldForBulletin) {
+    return " (ارسال تکی متوقف است چون زمان‌بندی روی حالت «فقط بولتن» قرار دارد)";
+  }
+  if (!autoSend.enabled) {
+    return " (ارسال خودکار در تنظیمات خاموش است)";
+  }
+  if (autoSend.firstError) {
+    return ` (خطای ارسال به ${autoSend.destination}: ${autoSend.firstError})`;
+  }
+  if (autoSend.destination === "local") {
+    return " (توجه: مقصد ارسال خودکار روی Local است؛ توکن/شناسه بله یا مقصد ارسال خودکار را روی «بله» تنظیم کنید)";
+  }
+  if (autoSend.firstRejectionReason) {
+    return ` (هیچ موردی حد نصاب ارسال را نداشت: ${autoSend.firstRejectionReason})`;
+  }
+  return "";
 }
 
 export async function POST(request: Request) {
@@ -64,6 +92,55 @@ export async function POST(request: Request) {
   const action = body.action ?? "analyze_batch";
 
   try {
+    if (action === "send_ready_to_bale") {
+      const baseRule = await resolveAutoSendRule();
+      const baleRule = {
+        ...baseRule,
+        enabled: true,
+        destination: baseRule.destination === "both" ? ("both" as const) : ("bale" as const),
+        maxItemsPerPass: Math.max(1, Math.min(25, Math.round(body.limit ?? 15))),
+      };
+
+      const pass = await runAutoDeliveryPass({ rule: baleRule });
+      const summary = await getNewsStatusSummary();
+      const failedEntry = pass.items.find((item) => item.outcome === "failed" && item.errors?.length);
+      const rejectedEntries = pass.items.filter(
+        (item) => (item.outcome === "not_matched" || item.outcome === "skipped_review") && item.reasons?.length,
+      );
+
+      if (pass.sent > 0) {
+        return Response.json({
+          success: true,
+          action,
+          autoSent: pass.sent,
+          failed: pass.failed,
+          remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
+          firstError: failedEntry?.errors?.[0] ?? null,
+          summary,
+          message: `${pass.sent} مقالهٔ واجد شرایط با موفقیت به کانال بله ارسال شد ✓ (حد نصاب فعال: اهمیت ≥ ${baleRule.minImportance} و ارتباط ≥ ${baleRule.minRelevance}).`,
+        });
+      }
+
+      const reasonText = failedEntry?.errors?.[0]
+        ? `خطای اتصال/ارسال به بله: ${failedEntry.errors[0]}`
+        : pass.considered === 0
+          ? "هیچ مقالهٔ تحلیل‌شدهٔ ارسال‌نشده‌ای در دیتابیس وجود ندارد."
+          : rejectedEntries.length > 0
+            ? `از ${pass.considered} مقالهٔ بررسی‌شده، هیچ‌کدام به حد نصاب ارسال (اهمیت ≥ ${baleRule.minImportance} و ارتباط ≥ ${baleRule.minRelevance}${baleRule.requireAiRecommendation ? " + تأیید AI" : ""}) نرسید — نمونه علت: «${rejectedEntries[0].title.slice(0, 60)}…» ← ${describeRejectionReasons(rejectedEntries[0].reasons)}`
+            : "تمام مقالات واجد شرایط قبلاً به بله ارسال شده‌اند.";
+
+      return Response.json({
+        success: true,
+        action,
+        autoSent: 0,
+        failed: pass.failed,
+        remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
+        firstError: failedEntry?.errors?.[0] ?? reasonText,
+        summary,
+        message: `ارسالی انجام نشد — ${reasonText}`,
+      });
+    }
+
     if (action === "analyze_batch") {
       const batchSize = Math.max(1, Math.min(24, Math.round(body.limit ?? 15)));
       const concurrency = Math.max(1, Math.min(6, Math.round(body.concurrency ?? 4)));
@@ -71,6 +148,7 @@ export async function POST(request: Request) {
 
       const selectedIds = await selectAnalysisBacklog(batchSize);
       if (selectedIds.length === 0) {
+        const catchupSend = await maybeRunAutoSend();
         const summary = await getNewsStatusSummary();
         return Response.json({
           success: true,
@@ -78,21 +156,23 @@ export async function POST(request: Request) {
           analyzed: 0,
           failed: 0,
           skippedOfftopic: 0,
-          autoSent: 0,
+          autoSent: catchupSend.sent,
           remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
+          firstError: catchupSend.firstError ?? null,
           summary,
-          message: "هیچ مقالهٔ در انتظار تحلیلی در صف باقی نمانده است.",
+          message: `هیچ مقالهٔ تحلیل‌نشده‌ای در صف نمانده است${explainZeroSend(catchupSend)}.`,
         });
       }
 
       const gated = await applyTopicGate(selectedIds);
       const results =
         gated.pass.length > 0
-          ? await analyzeSequentially(gated.pass, { concurrency, maxDurationMs: 54_000 })
+          ? await analyzeSequentially(gated.pass, { concurrency, maxDurationMs: 46_000 })
           : [];
       const okIds = results.filter((item) => item.ok).map((item) => item.id);
       const failedItems = results.filter((item) => !item.ok);
-      const autoSend = okIds.length > 0 ? await maybeRunAutoSend(okIds) : null;
+      // Deliver both newly-analyzed articles AND any older unsent qualifying articles.
+      const autoSend = await maybeRunAutoSend();
       const summary = await getNewsStatusSummary();
       const firstErr = failedItems[0];
 
@@ -102,13 +182,13 @@ export async function POST(request: Request) {
         analyzed: okIds.length,
         failed: failedItems.length,
         skippedOfftopic: gated.skipped.length,
-        autoSent: autoSend?.sent ?? 0,
+        autoSent: autoSend.sent,
         remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
         firstError: firstErr
           ? `${firstErr.message ?? firstErr.code ?? "خطا"}${firstErr.detail ? ` (${firstErr.detail.slice(0, 160)})` : ""}`
-          : null,
+          : autoSend.firstError ?? null,
         summary,
-        message: `${okIds.length} مقاله تحلیل شد${gated.skipped.length > 0 ? `، ${gated.skipped.length} مورد غیرمرتبط رد شد` : ""}${autoSend?.sent ? ` و ${autoSend.sent} مورد خودکار ارسال شد` : ""}.`,
+        message: `${okIds.length} مقاله تحلیل شد${gated.skipped.length > 0 ? `، ${gated.skipped.length} مورد غیرمرتبط رد شد` : ""}${explainZeroSend(autoSend)}.`,
       });
     }
 
@@ -181,9 +261,6 @@ export async function POST(request: Request) {
         }
       }
 
-      // Sweep ONLY genuinely off-topic articles (whose full body/abstract is already
-      // present and non-matching, or via first-paragraph inspection); keep 100% of
-      // relevant papers regardless of publication date.
       const richPending = await db
         .select({
           id: news.id,

@@ -5,6 +5,7 @@ import {
   describeRule,
   enforceDecisionRuleFloors,
   evaluateArticle,
+  inferDefaultDestinationWhenUnset,
   loadAutoSendRule,
   policyToRule,
 } from "../src/lib/agent/rules.ts";
@@ -186,4 +187,44 @@ test("enforceDecisionRuleFloors raises looser schedule/env thresholds to active 
   );
   assert.equal(check.matches, false);
   assert.ok(check.reasons.includes("importance_below_threshold"));
+});
+
+test("inferDefaultDestinationWhenUnset promotes implicit local fallback to bale when Bale is configured while honoring explicit env", () => {
+  assert.equal(
+    inferDefaultDestinationWhenUnset(rule({ destination: "local" }), {
+      envDestinationRaw: "",
+      baleConfigured: true,
+      scheduleDestination: "bale",
+    }).destination,
+    "bale",
+  );
+
+  assert.equal(
+    inferDefaultDestinationWhenUnset(rule({ destination: "local" }), {
+      envDestinationRaw: "",
+      baleConfigured: true,
+      scheduleDestination: "both",
+    }).destination,
+    "both",
+  );
+
+  // Explicit env AUTO_SEND_DESTINATION=local is respected:
+  assert.equal(
+    inferDefaultDestinationWhenUnset(rule({ destination: "local" }), {
+      envDestinationRaw: "local",
+      baleConfigured: true,
+      scheduleDestination: "bale",
+    }).destination,
+    "local",
+  );
+
+  // Neither Bale env nor Bale schedule => stays local:
+  assert.equal(
+    inferDefaultDestinationWhenUnset(rule({ destination: "local" }), {
+      envDestinationRaw: undefined,
+      baleConfigured: false,
+      scheduleDestination: "local",
+    }).destination,
+    "local",
+  );
 });

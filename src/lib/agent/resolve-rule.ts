@@ -16,13 +16,20 @@
 
 import { getActiveAiConfig } from "@/lib/ai/config-service";
 import {
+  AUTO_SEND_ENV,
   enforceDecisionRuleFloors,
+  inferDefaultDestinationWhenUnset,
   loadAutoSendRule,
   policyToRule,
   type AutoSendRule,
 } from "./rules";
+import { readScheduleRecord } from "./schedule-store";
 
 export { enforceDecisionRuleFloors, policyToRule };
+
+function isBaleEnvConfigured(): boolean {
+  return Boolean(process.env.BALE_BOT_TOKEN?.trim() && process.env.BALE_CHAT_ID?.trim());
+}
 
 export async function applyActiveSendFloors(rule: AutoSendRule): Promise<AutoSendRule> {
   try {
@@ -34,12 +41,30 @@ export async function applyActiveSendFloors(rule: AutoSendRule): Promise<AutoSen
 }
 
 export async function resolveAutoSendRule(): Promise<AutoSendRule> {
+  let scheduleDestination: AutoSendRule["destination"] | null = null;
+  try {
+    const schedule = await readScheduleRecord();
+    scheduleDestination = schedule.destination;
+  } catch {
+    scheduleDestination = null;
+  }
+
   try {
     const config = await getActiveAiConfig();
     const policy = config.autoSendPolicy;
-    const baseRule = policy?.useCustom ? policyToRule(policy) : loadAutoSendRule();
+    const baseRule = policy?.useCustom
+      ? policyToRule(policy)
+      : inferDefaultDestinationWhenUnset(loadAutoSendRule(), {
+          envDestinationRaw: process.env[AUTO_SEND_ENV.destination],
+          baleConfigured: isBaleEnvConfigured(),
+          scheduleDestination,
+        });
     return enforceDecisionRuleFloors(baseRule, config.decisionRules);
   } catch {
-    return loadAutoSendRule();
+    return inferDefaultDestinationWhenUnset(loadAutoSendRule(), {
+      envDestinationRaw: process.env[AUTO_SEND_ENV.destination],
+      baleConfigured: isBaleEnvConfigured(),
+      scheduleDestination,
+    });
   }
 }

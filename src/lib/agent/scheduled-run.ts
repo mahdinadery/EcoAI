@@ -517,7 +517,9 @@ async function executeScheduledPass(args: {
 
     const selected = await selectAnalysisBacklog(args.config.maxAnalyze, [], { skipSweep: true });
     const gated = await applyTopicGate(selected);
-    const results = await analyzeSequentially(gated.pass);
+    // Keep analysis bounded to ~34s with 4 concurrent workers so Step 3 (Bale
+    // delivery) always has ample headroom before serverless/proxy 60s timeouts.
+    const results = await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 34_000 });
 
     const failedAnalyses = results.filter((item) => !item.ok);
 

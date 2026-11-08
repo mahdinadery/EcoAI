@@ -124,7 +124,10 @@ export async function POST(request: Request) {
 
       response.audienceNote = { applied: !audience.alreadyPresent, alreadyPresent: audience.alreadyPresent };
 
-      const topicsApplied = merged.added.length > 0 || mergedBlocked.added.length > 0;
+      const wasFilterInactive =
+        applyTopics && (!active.topicFilter?.enabled || active.topicFilter?.mode !== "include");
+      const topicsApplied =
+        merged.added.length > 0 || mergedBlocked.added.length > 0 || wasFilterInactive;
       if (!topicsApplied && audience.alreadyPresent) {
         if (applyTopics) {
           response.topics = {

@@ -4,10 +4,13 @@ import { isNextProductionBuild } from "@/db";
 import { AdminDbErrorPanel } from "@/components/admin/admin-db-error-panel";
 import { AdminGateScreen } from "@/components/admin/admin-gate-screen";
 import { AdminKeyQuerySync } from "@/components/admin/admin-key-query-sync";
+import { NewsQueueToolbar } from "@/components/admin/news-queue-toolbar";
 import { adminKeyForClient, getAdminPageAccess } from "@/lib/admin/page-access";
 import { runWithSchemaRepair } from "@/lib/admin/schema-sync";
+import { readActiveOperationalSettings } from "@/lib/ai/config-service";
 import { getNewsStatusSummary, listAdminNews, listFilterOptions, type AdminNewsFilters } from "@/lib/news/news-admin";
 import { NEWS_STATUSES, NEWS_STATUS_LABELS } from "@/lib/news/status";
+import { isTopicFilterActive } from "@/lib/news/topic-filter";
 import { Sidebar } from "@/components/sidebar";
 import { StatusBadge } from "@/components/status-badge";
 import { NewsStatusTones } from "@/components/admin/news-status-pill";
@@ -76,7 +79,12 @@ export default async function AdminNewsPage({ searchParams }: PageProps) {
   const clientKey = adminKeyForClient(access);
 
   const outcome = await runWithSchemaRepair(() =>
-    Promise.all([listAdminNews(filters), getNewsStatusSummary(), listFilterOptions()]),
+    Promise.all([
+      listAdminNews(filters),
+      getNewsStatusSummary(),
+      listFilterOptions(),
+      readActiveOperationalSettings(),
+    ]),
   );
 
   if (!outcome.ok) {
@@ -91,7 +99,8 @@ export default async function AdminNewsPage({ searchParams }: PageProps) {
     );
   }
 
-  const [{ items, total, page, totalPages }, summary, options] = outcome.value;
+  const [{ items, total, page, totalPages }, summary, options, operational] = outcome.value;
+  const topicFilterActive = isTopicFilterActive(operational?.topicFilter);
 
   const rawFilters: Record<string, string | undefined> = {
     q: filters.q,
@@ -121,12 +130,30 @@ export default async function AdminNewsPage({ searchParams }: PageProps) {
             </header>
 
             <div className="mt-5 flex flex-wrap gap-2">
-              {NEWS_STATUSES.filter((s) => (summary.byStatus[s] ?? 0) > 0).map((status) => (
-                <span key={status} className="rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-bold text-muted shadow-sm">
-                  {NEWS_STATUS_LABELS[status]}: {summary.byStatus[status]}
-                </span>
-              ))}
+              {NEWS_STATUSES.filter((s) => (summary.byStatus[s] ?? 0) > 0).map((status) => {
+                const active = filters.status === status;
+                return (
+                  <Link
+                    key={status}
+                    href={`/admin/news${buildQuery(rawFilters, { status: active ? undefined : status, page: undefined })}`}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold shadow-sm transition-colors ${
+                      active
+                        ? "border-accent bg-accent text-white"
+                        : "border-line bg-surface text-muted hover:border-accent/60 hover:text-ink"
+                    }`}
+                  >
+                    {NEWS_STATUS_LABELS[status]}: {summary.byStatus[status]}
+                  </Link>
+                );
+              })}
             </div>
+
+            <NewsQueueToolbar
+              adminKey={clientKey}
+              readyCount={summary.byStatus.READY_FOR_AI ?? 0}
+              failedCount={summary.byStatus.FAILED ?? 0}
+              topicFilterActive={topicFilterActive}
+            />
 
             <form action="/admin/news" className="mt-5 grid gap-3 rounded-2xl border border-line/80 bg-surface p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-4" method="GET">
               <FilterField label="جست‌وجو (عنوان / لینک)">

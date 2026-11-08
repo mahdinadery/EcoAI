@@ -40,7 +40,7 @@ export const NEWS_STATUSES: NewsStatus[] = [
 ];
 
 export const NEWS_STATUS_LABELS: Record<NewsStatus, string> = {
-  FETCHED: "دریافت‌شده",
+  FETCHED: "آرشیو (خارج از صف)",
   NORMALIZED: "نجارسازی‌شده",
   DUPLICATE: "تکراری",
   SKIPPED_OFFTOPIC: "خارج از موضوع",
@@ -82,3 +82,14 @@ export const SOURCE_HEALTH_TONES: Record<SourceHealth, StatusTone> = {
   failed: "danger",
   paused: "muted",
 };
+
+/** RSS archive items older than 7 days are stored as `FETCHED` (for URL dedupe) instead of clogging `READY_FOR_AI`. */
+export const MAX_AUTO_QUEUE_AGE_DAYS = 7;
+const MAX_AUTO_QUEUE_AGE_MS = MAX_AUTO_QUEUE_AGE_DAYS * 24 * 60 * 60 * 1000;
+
+export function isStaleArchiveDate(publishedAt: Date | null | undefined, nowMs = Date.now()): boolean {
+  if (!publishedAt) return false;
+  const ts = publishedAt.getTime();
+  if (Number.isNaN(ts)) return false;
+  return nowMs - ts > MAX_AUTO_QUEUE_AGE_MS;
+}

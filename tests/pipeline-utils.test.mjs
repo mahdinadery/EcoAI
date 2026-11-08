@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { canonicalizeUrl } from "../src/lib/news/canonical-url.ts";
+import { isStaleArchiveDate } from "../src/lib/news/status.ts";
 import { buildNewsMessage } from "../src/lib/delivery/message.ts";
 import { DEFAULT_AUTO_SEND_POLICY, DEFAULT_TOPIC_FILTER } from "../src/lib/ai/config-types.ts";
 
@@ -43,4 +44,13 @@ test("default topic filter is inactive (fail-open) and default policy is env-dri
   assert.equal(DEFAULT_TOPIC_FILTER.topics.length, 0);
   assert.equal(DEFAULT_AUTO_SEND_POLICY.useCustom, false);
   assert.equal(DEFAULT_AUTO_SEND_POLICY.destination, "local");
+});
+
+test("isStaleArchiveDate flags RSS items older than 7 days while keeping recent or undated items active", () => {
+  const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+  assert.equal(isStaleArchiveDate(null, now), false);
+  assert.equal(isStaleArchiveDate(new Date(now - 2 * 86_400_000), now), false);
+  assert.equal(isStaleArchiveDate(new Date(now - 7 * 86_400_000), now), false);
+  assert.equal(isStaleArchiveDate(new Date(now - 8 * 86_400_000), now), true);
+  assert.equal(isStaleArchiveDate(new Date("2026-08-01T00:00:00Z"), now), true);
 });

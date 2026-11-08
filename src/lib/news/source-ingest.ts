@@ -27,12 +27,10 @@ import { normalizeContent, normalizeTitle } from "./normalize";
 import { fetchFeed, parseFeed, type NewsFetchResult, type NormalizedNews } from "./rss";
 import { evaluateTopicFilter, evaluateWithFirstParagraphFallback, isTopicGateActive } from "./topic-filter";
 
-import { isStaleArchiveDate } from "./status";
-
 const CHUNK_SIZE = 50;
-const LEAD_CHECK_CONCURRENCY = 4;
+const LEAD_CHECK_CONCURRENCY = 6;
 const LEAD_FETCH_TIMEOUT_MS = 4_500;
-const MAX_LEAD_CHECKS_PER_FEED = 10;
+const MAX_LEAD_CHECKS_PER_FEED = 16;
 
 /**
  * Max sources fetched at the same time. Geo-blocked hosts can hold a socket
@@ -97,11 +95,7 @@ async function partitionByTopic(
     );
     if (result.verdict === "pass") {
       pass.push(candidate);
-    } else if (
-      result.reason === "not_in_selected_topics" &&
-      !isStaleArchiveDate(candidate.item.publishedAt) &&
-      (candidate.item.content ?? "").trim().length < 300
-    ) {
+    } else if (result.reason === "not_in_selected_topics" && (candidate.item.content ?? "").trim().length < 300) {
       needsLeadCheck.push(candidate);
     } else {
       skip.push(candidate);
@@ -247,7 +241,6 @@ async function storeCandidates(
 ): Promise<{ created: number; filteredCreated: number; duplicateRowsStored: number; newArticleIds: string[] }> {
   let created = 0;
   const newArticleIds: string[] = [];
-  const nowMs = Date.now();
 
   for (let index = 0; index < fresh.length; index += CHUNK_SIZE) {
     const chunk = fresh.slice(index, index + CHUNK_SIZE);
@@ -256,15 +249,13 @@ async function storeCandidates(
       .values(
         chunk.map((candidate) => ({
           ...buildValues(candidate, source, defaults),
-          status: isStaleArchiveDate(candidate.item.publishedAt, nowMs) ? "FETCHED" : "READY_FOR_AI",
+          status: "READY_FOR_AI",
         })),
       )
       .onConflictDoNothing({ target: news.url })
-      .returning({ id: news.id, status: news.status });
+      .returning({ id: news.id });
     created += inserted.length;
-    newArticleIds.push(
-      ...inserted.filter((row) => row.status === "READY_FOR_AI").map((row) => row.id),
-    );
+    newArticleIds.push(...inserted.map((row) => row.id));
   }
 
   let filteredCreated = 0;

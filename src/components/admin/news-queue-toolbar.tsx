@@ -16,8 +16,7 @@ type QueueActionResponse = {
   failed?: number;
   skippedOfftopic?: number;
   autoSent?: number;
-  archived?: number;
-  archivedStale?: number;
+  restoredCount?: number;
   sweptOfftopic?: number;
   requeued?: number;
   remainingReady?: number;
@@ -36,8 +35,9 @@ export function NewsQueueToolbar({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [autoDraining, setAutoDraining] = useState(false);
   const stopRef = useRef(false);
-  const [liveReady, setLiveReady] = useState(readyCount);
+  const [liveReadyOverride, setLiveReadyOverride] = useState<number | null>(null);
   const [banner, setBanner] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
+  const displayedReady = liveReadyOverride ?? readyCount;
 
   function headers(): Record<string, string> {
     return {
@@ -70,7 +70,7 @@ export function NewsQueueToolbar({
         return;
       }
       if (typeof data.remainingReady === "number") {
-        setLiveReady(data.remainingReady);
+        setLiveReadyOverride(data.remainingReady);
       }
       setBanner({
         tone: data.firstError ? "warn" : "ok",
@@ -93,17 +93,21 @@ export function NewsQueueToolbar({
 
     stopRef.current = false;
     setAutoDraining(true);
-    setBanner({ tone: "ok", text: "پردازش پیوستهٔ صف تحلیل AI آغاز شد (دسته‌های ۵تایی)…" });
+    const startedMs = Date.now();
+    setBanner({
+      tone: "ok",
+      text: "پردازش پرسرعت موازی آغاز شد (دسته‌های ۱۵تایی با ۴ پردازشگر هم‌زمان — تمام مقالات حفظ و تحلیل می‌شوند)…",
+    });
 
     let totalAnalyzed = 0;
     let totalSent = 0;
     let totalSkipped = 0;
 
     try {
-      for (let pass = 1; pass <= 30; pass += 1) {
+      for (let pass = 1; pass <= 60; pass += 1) {
         if (stopRef.current) break;
 
-        const data = await callQueueApi({ action: "analyze_batch", limit: 5 });
+        const data = await callQueueApi({ action: "analyze_batch", limit: 15, concurrency: 4 });
         if (!data.success) {
           setBanner({
             tone: "err",
@@ -116,7 +120,7 @@ export function NewsQueueToolbar({
         totalSent += data.autoSent ?? 0;
         totalSkipped += data.skippedOfftopic ?? 0;
         const rem = data.remainingReady ?? 0;
-        setLiveReady(rem);
+        setLiveReadyOverride(rem);
 
         if (data.firstError && (data.analyzed ?? 0) === 0) {
           setBanner({
@@ -126,16 +130,19 @@ export function NewsQueueToolbar({
           break;
         }
 
+        const elapsedMin = Math.max(0.1, (Date.now() - startedMs) / 60_000);
+        const ratePerMin = Math.round(totalAnalyzed / elapsedMin);
+
         setBanner({
           tone: "ok",
-          text: `در حال تخلیهٔ صف… تا این لحظه ${totalAnalyzed} خبر تحلیل شد${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}${totalSkipped > 0 ? `، ${totalSkipped} خارج از موضوع` : ""} — باقی‌مانده در صف: ${rem}`,
+          text: `در حال ورود سریع به فرآیند… تا این لحظه ${totalAnalyzed} مقاله تحلیل شد (~${ratePerMin} مقاله/دقیقه)${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}${totalSkipped > 0 ? `، ${totalSkipped} خارج از موضوع` : ""} — باقی‌مانده در صف: ${rem}`,
         });
         router.refresh();
 
         if (rem <= 0 || ((data.analyzed ?? 0) === 0 && (data.skippedOfftopic ?? 0) === 0)) {
           setBanner({
             tone: "ok",
-            text: `پردازش صف تکمیل شد ✓ (${totalAnalyzed} خبر تحلیل شد${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}).`,
+            text: `پردازش کل مقالات صف تکمیل شد ✓ (${totalAnalyzed} مقاله تحلیل شد${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}).`,
           });
           break;
         }
@@ -143,7 +150,7 @@ export function NewsQueueToolbar({
     } catch {
       setBanner({
         tone: "warn",
-        text: `ارتباط موقتاً قطع شد (${totalAnalyzed} خبر تا قبل از قطع تحلیل شد). می‌توانید دوباره ادامه دهید.`,
+        text: `ارتباط موقتاً قطع شد (${totalAnalyzed} مقاله تا این لحظه تحلیل شد). با یک کلیک می‌توانید از ادامهٔ صف شروع کنید.`,
       });
     } finally {
       setAutoDraining(false);
@@ -160,66 +167,58 @@ export function NewsQueueToolbar({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-sm font-bold text-ink">
-            پردازش و پالایش صف تحلیل هوش مصنوعی ({liveReady.toLocaleString("fa-IR")} خبر در انتظار)
+            شتاب‌دهندهٔ ورود مقالات به تحلیل هوش مصنوعی ({displayedReady.toLocaleString("fa-IR")} مقاله در صف)
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted">
+            تمام مقالات مرتبط (بدون هیچ محدودیت زمانی و بدون حذف مقالات قدیمی‌تر) در صف حفظ می‌شوند و با پردازش موازی ۴تایی با سرعت ۴ برابر وارد فرآیند ترجمه، خلاصه‌سازی و ارزیابی ارسال می‌شوند.
             {!topicFilterActive
-              ? "⚠️ فیلتر موضوعی «اقتصاد هوش مصنوعی» هنوز روی پیکربندی فعال روشن نیست؛ به همین دلیل همهٔ خبرهای عمومی و آرشیوی فیدها وارد صف آمادهٔ تحلیل شده‌اند. ابتدا دکمهٔ «پالایش هوشمند صف» را بزنید تا فقط خبرهای تازه و مرتبط باقی بمانند."
-              : "برای جلوگیری از تایم‌اوت سرور و سقف توکن، خبرها به‌صورت دسته‌ای تحلیل می‌شوند. می‌توانید خبرهای آرشیوی قدیمی‌تر از ۷ روز را بایگانی کنید و بقیه را دسته‌ای تحلیل نمایید."}
+              ? " پیشنهاد می‌شود ابتدا «فعال‌سازی فیلتر موضوعی اقتصاد AI» را بزنید تا مقالات غیرمرتبط کنار بروند و تمام توان پردازشی صرف مقالات مرتبط شود."
+              : ""}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
-            className="rounded-xl border border-accent bg-accent-soft px-3.5 py-2 text-xs font-bold text-accent-ink transition-colors hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={Boolean(busyAction) || autoDraining}
-            onClick={() => handleSingleAction("apply_ai_pack_filter", {}, "پالایش هوشمند صف")}
-            type="button"
-          >
-            {busyAction === "apply_ai_pack_filter"
-              ? "در حال پالایش صف…"
-              : "۱. پالایش هوشمند صف (فیلتر اقتصاد AI + حذف آرشیو >۷ روز)"}
-          </button>
-
-          <button
-            className="rounded-xl bg-accent px-3.5 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={Boolean(busyAction) || autoDraining}
-            onClick={() => handleSingleAction("analyze_batch", { limit: 6 }, "تحلیل دستهٔ بعدی")}
-            type="button"
-          >
-            {busyAction === "analyze_batch" ? "در حال تحلیل ۶ خبر…" : "تحلیل ۶ خبر بعدی"}
-          </button>
-
-          <button
             className={`rounded-xl px-3.5 py-2 text-xs font-bold transition-colors ${
               autoDraining
                 ? "border border-danger-line bg-danger-soft text-danger-ink"
-                : "border border-ok-line bg-ok-soft text-ok-ink hover:opacity-90"
+                : "bg-accent text-white shadow-sm hover:bg-accent-strong"
             } disabled:cursor-not-allowed disabled:opacity-60`}
             disabled={Boolean(busyAction)}
             onClick={handleAutoDrain}
             type="button"
           >
-            {autoDraining ? "توقف پردازش پیوسته" : "پردازش پیوستهٔ خودکار صف"}
+            {autoDraining ? "توقف پردازش پرسرعت" : "پردازش پرسرعت پیوستهٔ کل صف (موازی ۴×)"}
+          </button>
+
+          <button
+            className="rounded-xl border border-accent bg-accent-soft px-3.5 py-2 text-xs font-bold text-accent-ink transition-colors hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={Boolean(busyAction) || autoDraining}
+            onClick={() => handleSingleAction("analyze_batch", { limit: 15, concurrency: 4 }, "تحلیل سریع ۱۵ مقاله")}
+            type="button"
+          >
+            {busyAction === "analyze_batch" ? "در حال تحلیل موازی ۱۵ مقاله…" : "تحلیل سریع ۱۵ مقالهٔ بعدی"}
           </button>
 
           <button
             className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={Boolean(busyAction) || autoDraining}
-            onClick={() => handleSingleAction("archive_stale", { days: 7 }, "بایگانی قدیمی‌ها")}
+            onClick={() => handleSingleAction("apply_ai_pack_filter", {}, "فعال‌سازی فیلتر موضوعی اقتصاد AI")}
             type="button"
           >
-            {busyAction === "archive_stale" ? "در حال بایگانی…" : "بایگانی قدیمی‌تر از ۷ روز"}
+            {busyAction === "apply_ai_pack_filter"
+              ? "در حال بررسی موضوعی…"
+              : "فیلتر موضوعی اقتصاد AI (حفظ همهٔ تاریخ‌ها)"}
           </button>
 
           {failedCount > 0 ? (
             <button
               className="rounded-xl border border-warn-line bg-warn-soft px-3 py-2 text-xs font-medium text-warn-ink transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={Boolean(busyAction) || autoDraining}
-              onClick={() => handleSingleAction("retry_failed", { days: 7 }, "بازگردانی خطادارها")}
+              onClick={() => handleSingleAction("retry_failed", {}, "بازگردانی همهٔ خطاها")}
               type="button"
             >
-              {busyAction === "retry_failed" ? "در حال بازگردانی…" : "تلاش مجدد خطاهای ۷ روز اخیر"}
+              {busyAction === "retry_failed" ? "در حال بازگردانی…" : "تلاش مجدد همهٔ مقالات خطادار"}
             </button>
           ) : null}
         </div>

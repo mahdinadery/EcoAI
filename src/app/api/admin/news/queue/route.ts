@@ -30,21 +30,22 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 type QueueActionBody = {
-  action?: "analyze_batch" | "apply_ai_pack_filter" | "archive_stale" | "retry_failed";
+  action?: "analyze_batch" | "apply_ai_pack_filter" | "retry_failed";
   limit?: number;
-  days?: number;
+  concurrency?: number;
 };
 
-async function archiveOlderUnanalyzed(days: number): Promise<number> {
-  const safeDays = Math.max(1, Math.min(90, Math.round(days)));
-  const archived = await db
+/**
+ * Ensures any previously sidelined `FETCHED` unanalyzed papers are restored to
+ * `READY_FOR_AI` so research papers are never dropped based on publication age.
+ */
+async function restoreSidelinedUnanalyzed(): Promise<number> {
+  const restored = await db
     .update(news)
-    .set({ status: "FETCHED", updatedAt: new Date() })
-    .where(
-      sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('READY_FOR_AI', 'FAILED') AND coalesce(${news.publishedAt}, ${news.createdAt}) < now() - (${safeDays}::int * interval '1 day')`,
-    )
+    .set({ status: "READY_FOR_AI", updatedAt: new Date() })
+    .where(sql`${news.analyzedAt} IS NULL AND ${news.status} = 'FETCHED'`)
     .returning({ id: news.id });
-  return archived.length;
+  return restored.length;
 }
 
 export async function POST(request: Request) {
@@ -64,7 +65,8 @@ export async function POST(request: Request) {
 
   try {
     if (action === "analyze_batch") {
-      const batchSize = Math.max(1, Math.min(10, Math.round(body.limit ?? 5)));
+      const batchSize = Math.max(1, Math.min(24, Math.round(body.limit ?? 15)));
+      const concurrency = Math.max(1, Math.min(6, Math.round(body.concurrency ?? 4)));
       await recoverStaleProcessing();
 
       const selectedIds = await selectAnalysisBacklog(batchSize);
@@ -79,14 +81,14 @@ export async function POST(request: Request) {
           autoSent: 0,
           remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
           summary,
-          message: "هیچ خبر در انتظار تحلیلی در صف باقی نمانده است.",
+          message: "هیچ مقالهٔ در انتظار تحلیلی در صف باقی نمانده است.",
         });
       }
 
       const gated = await applyTopicGate(selectedIds);
       const results =
         gated.pass.length > 0
-          ? await analyzeSequentially(gated.pass, { maxDurationMs: 52_000 })
+          ? await analyzeSequentially(gated.pass, { concurrency, maxDurationMs: 54_000 })
           : [];
       const okIds = results.filter((item) => item.ok).map((item) => item.id);
       const failedItems = results.filter((item) => !item.ok);
@@ -106,34 +108,16 @@ export async function POST(request: Request) {
           ? `${firstErr.message ?? firstErr.code ?? "خطا"}${firstErr.detail ? ` (${firstErr.detail.slice(0, 160)})` : ""}`
           : null,
         summary,
-        message: `${okIds.length} خبر تحلیل شد${gated.skipped.length > 0 ? `، ${gated.skipped.length} مورد خارج از موضوع رد شد` : ""}${autoSend?.sent ? ` و ${autoSend.sent} مورد خودکار ارسال شد` : ""}.`,
-      });
-    }
-
-    if (action === "archive_stale") {
-      const days = Math.max(1, Math.min(90, Math.round(body.days ?? 7)));
-      const archived = await archiveOlderUnanalyzed(days);
-      const summary = await getNewsStatusSummary();
-      return Response.json({
-        success: true,
-        action,
-        archived,
-        remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
-        summary,
-        message:
-          archived > 0
-            ? `${archived} خبر قدیمی‌تر از ${days} روز از صف «آماده تحلیل AI» به آرشیو منتقل شد.`
-            : `خبر تحلیل‌نشده‌ای قدیمی‌تر از ${days} روز در صف نبود.`,
+        message: `${okIds.length} مقاله تحلیل شد${gated.skipped.length > 0 ? `، ${gated.skipped.length} مورد غیرمرتبط رد شد` : ""}${autoSend?.sent ? ` و ${autoSend.sent} مورد خودکار ارسال شد` : ""}.`,
       });
     }
 
     if (action === "retry_failed") {
-      const days = Math.max(1, Math.min(30, Math.round(body.days ?? 7)));
       const requeued = await db
         .update(news)
         .set({ status: "READY_FOR_AI", updatedAt: new Date() })
         .where(
-          sql`${news.status} = 'FAILED' AND ${news.analyzedAt} IS NULL AND coalesce(${news.publishedAt}, ${news.createdAt}) >= now() - (${days}::int * interval '1 day')`,
+          sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('FAILED', 'FETCHED')`,
         )
         .returning({ id: news.id });
       const summary = await getNewsStatusSummary();
@@ -145,12 +129,14 @@ export async function POST(request: Request) {
         summary,
         message:
           requeued.length > 0
-            ? `${requeued.length} خبر خطادارِ ${days} روز اخیر به صف «آماده تحلیل AI» بازگردانده شد.`
-            : "خبر خطادار تازه‌ای برای بازگردانی یافت نشد.",
+            ? `${requeued.length} مقاله بدون محدودیت زمانی دوباره به صف «آماده تحلیل AI» بازگردانده شد.`
+            : "مقالهٔ خطادار یا خارج‌شده‌ای برای بازگردانی یافت نشد.",
       });
     }
 
     if (action === "apply_ai_pack_filter") {
+      const restoredCount = await restoreSidelinedUnanalyzed();
+
       const active = await getActiveAiConfig();
       const merged = mergePackTopics(active.topicFilter?.topics ?? [], AI_ECONOMICS_PACK);
       const mergedBlocked = mergeBlockedKeywords(
@@ -195,10 +181,9 @@ export async function POST(request: Request) {
         }
       }
 
-      // 1) Move >7d historical archive items out of `READY_FOR_AI` first so we don't waste time on old dumps.
-      const archivedStale = await archiveOlderUnanalyzed(7);
-
-      // 2) Fast in-memory sweep across ALL remaining rich-body or blocked items, plus lead-paragraph sweep on recent ones.
+      // Sweep ONLY genuinely off-topic articles (whose full body/abstract is already
+      // present and non-matching, or via first-paragraph inspection); keep 100% of
+      // relevant papers regardless of publication date.
       const richPending = await db
         .select({
           id: news.id,
@@ -217,8 +202,7 @@ export async function POST(request: Request) {
           check.verdict === "skip" &&
           (check.reason !== "not_in_selected_topics" ||
             row.content === "" ||
-            (row.content ?? "").trim().length >= 300 ||
-            (row.description ?? "").trim().length >= 180)
+            (row.content ?? "").trim().length >= 300)
         ) {
           bulkSkipIds.push(row.id);
         }
@@ -238,11 +222,11 @@ export async function POST(request: Request) {
         success: true,
         action,
         packApplied: needsSave,
-        archivedStale,
+        restoredCount,
         sweptOfftopic: totalSwept,
         remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
         summary,
-        message: `پالایش صف انجام شد: ${archivedStale} خبر قدیمی‌تر از ۷ روز بایگانی شد، ${totalSwept} خبر غیرمرتبط با اقتصاد هوش مصنوعی خارج شد، و اکنون ${summary.byStatus.READY_FOR_AI ?? 0} خبر تازه و مرتبط در صف تحلیل باقی مانده است.`,
+        message: `فیلتر موضوعی اقتصاد هوش مصنوعی بدون حذف هیچ مقالهٔ قدیمی اعمال شد: ${totalSwept} مورد غیرمرتبط کنار گذاشته شد${restoredCount > 0 ? `، ${restoredCount} مقاله به صف بازگردانده شد` : ""} و تمام ${summary.byStatus.READY_FOR_AI ?? 0} مقالهٔ مرتبط در صف تحلیل حفظ شدند.`,
       });
     }
 
@@ -250,7 +234,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return Response.json(
-      { success: false, message: "خطا در پردازش صف اخبار.", detail: detail.slice(0, 240) },
+      { success: false, message: "خطا در پردازش صف مقالات.", detail: detail.slice(0, 240) },
       { status: 500 },
     );
   }

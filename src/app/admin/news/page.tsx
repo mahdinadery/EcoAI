@@ -151,6 +151,7 @@ export default async function AdminNewsPage({ searchParams }: PageProps) {
             <NewsQueueToolbar
               adminKey={clientKey}
               readyCount={summary.byStatus.READY_FOR_AI ?? 0}
+              readyToSendCount={summary.byStatus.READY_TO_SEND ?? 0}
               failedCount={summary.byStatus.FAILED ?? 0}
               topicFilterActive={topicFilterActive}
             />

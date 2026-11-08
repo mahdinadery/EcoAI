@@ -15,7 +15,7 @@ import { db } from "@/db";
 import { deliveries, news, type NewsRow } from "@/db/schema";
 import { sendNewsDelivery } from "@/lib/delivery";
 import { expandTargets } from "@/lib/delivery/types";
-import { and, desc, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { applyActiveSendFloors, resolveAutoSendRule } from "./resolve-rule";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 
@@ -82,12 +82,39 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
     return db.select().from(news).where(inArray(news.id, newsIds)).limit(rule.maxItemsPerPass);
   }
 
-  // Only already-analyzed articles are eligible; nothing here triggers analysis.
+  const targets = expandTargets(rule.destination);
+
+  // Exclude duplicates, off-topic rows, and articles already delivered to ALL
+  // target destinations (so articles previously sent only to `local` are still
+  // picked up for `bale`!). Qualifying articles are ordered ahead of non-matching
+  // rows so 20 rejected articles at the top never starve older `READY_TO_SEND` papers.
   return db
     .select()
     .from(news)
-    .where(sql`${news.analyzedAt} IS NOT NULL AND ${news.summary} IS NOT NULL AND ${news.summary} <> ''`)
-    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
+    .where(
+      and(
+        sql`${news.analyzedAt} IS NOT NULL AND coalesce(${news.summary}, '') <> ''`,
+        sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
+        ...targets.map((dest) =>
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(deliveries)
+              .where(
+                and(
+                  eq(deliveries.newsId, news.id),
+                  eq(deliveries.destination, dest),
+                  eq(deliveries.status, "sent"),
+                ),
+              ),
+          ),
+        ),
+      ),
+    )
+    .orderBy(
+      sql`CASE WHEN coalesce(${news.importanceScore}, 0) >= ${rule.minImportance} AND coalesce(${news.relevanceScore}, 0) >= ${rule.minRelevance} AND coalesce(${news.relevanceGrade}, '') <> 'rejected' THEN 0 ELSE 1 END ASC`,
+      desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`),
+    )
     .limit(rule.maxItemsPerPass);
 }
 

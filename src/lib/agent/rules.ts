@@ -95,6 +95,41 @@ export function loadAutoSendRule(): AutoSendRule {
   };
 }
 
+/**
+ * Upgrades the implicit `"local"` fallback to `"bale"` (or `"both"`) when
+ * `AUTO_SEND_DESTINATION` was never explicitly set in env, while Bale bot
+ * credentials or a Bale schedule target are already configured on the server.
+ */
+export function inferDefaultDestinationWhenUnset(
+  baseRule: AutoSendRule,
+  context: {
+    envDestinationRaw?: string | null;
+    baleConfigured: boolean;
+    scheduleDestination?: DeliveryTarget | null;
+  },
+): AutoSendRule {
+  const explicitEnv = (context.envDestinationRaw ?? "").trim().toLowerCase();
+  if (explicitEnv && (VALID_DESTINATIONS as string[]).includes(explicitEnv)) {
+    return baseRule;
+  }
+  if (baseRule.destination !== "local") {
+    return baseRule;
+  }
+  if (context.baleConfigured) {
+    return {
+      ...baseRule,
+      destination: context.scheduleDestination === "both" ? "both" : "bale",
+    };
+  }
+  if (context.scheduleDestination === "bale" || context.scheduleDestination === "both") {
+    return {
+      ...baseRule,
+      destination: context.scheduleDestination,
+    };
+  }
+  return baseRule;
+}
+
 /** Maps a dashboard `autoSendPolicy` onto the runtime rule shape (pure). */
 export function policyToRule(policy: AiAutoSendPolicy): AutoSendRule {
   return {

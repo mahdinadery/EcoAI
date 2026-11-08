@@ -6,6 +6,7 @@ import { useRef, useState } from "react";
 type QueueToolbarProps = {
   adminKey?: string;
   readyCount: number;
+  readyToSendCount?: number;
   failedCount: number;
   topicFilterActive: boolean;
 };
@@ -28,6 +29,7 @@ type QueueActionResponse = {
 export function NewsQueueToolbar({
   adminKey = "",
   readyCount,
+  readyToSendCount = 0,
   failedCount,
   topicFilterActive,
 }: QueueToolbarProps) {
@@ -72,9 +74,10 @@ export function NewsQueueToolbar({
       if (typeof data.remainingReady === "number") {
         setLiveReadyOverride(data.remainingReady);
       }
+      const hasWarn = Boolean(data.firstError) && (data.autoSent ?? 0) === 0;
       setBanner({
-        tone: data.firstError ? "warn" : "ok",
-        text: data.firstError ? `${data.message ?? ""} — خطا: ${data.firstError}` : (data.message ?? "انجام شد."),
+        tone: hasWarn ? "warn" : "ok",
+        text: data.message ?? "انجام شد.",
       });
       router.refresh();
     } catch {
@@ -96,7 +99,7 @@ export function NewsQueueToolbar({
     const startedMs = Date.now();
     setBanner({
       tone: "ok",
-      text: "پردازش پرسرعت موازی آغاز شد (دسته‌های ۱۵تایی با ۴ پردازشگر هم‌زمان — تمام مقالات حفظ و تحلیل می‌شوند)…",
+      text: "پردازش پرسرعت موازی آغاز شد (دسته‌های ۱۵تایی با ۴ پردازشگر هم‌زمان + ارسال خودکار به بله)…",
     });
 
     let totalAnalyzed = 0;
@@ -125,7 +128,7 @@ export function NewsQueueToolbar({
         if (data.firstError && (data.analyzed ?? 0) === 0) {
           setBanner({
             tone: "err",
-            text: `توقف به دلیل خطای سرویس هوش مصنوعی پس از ${totalAnalyzed} تحلیل: ${data.firstError}`,
+            text: `توقف پس از ${totalAnalyzed} تحلیل: ${data.firstError}`,
           });
           break;
         }
@@ -134,15 +137,15 @@ export function NewsQueueToolbar({
         const ratePerMin = Math.round(totalAnalyzed / elapsedMin);
 
         setBanner({
-          tone: "ok",
-          text: `در حال ورود سریع به فرآیند… تا این لحظه ${totalAnalyzed} مقاله تحلیل شد (~${ratePerMin} مقاله/دقیقه)${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}${totalSkipped > 0 ? `، ${totalSkipped} خارج از موضوع` : ""} — باقی‌مانده در صف: ${rem}`,
+          tone: data.firstError && totalSent === 0 ? "warn" : "ok",
+          text: `در حال ورود سریع به فرآیند… تا این لحظه ${totalAnalyzed} مقاله تحلیل شد (~${ratePerMin} مقاله/دقیقه)، ${totalSent} ارسال به بله${totalSkipped > 0 ? `، ${totalSkipped} خارج از موضوع` : ""} — باقی‌مانده در صف: ${rem}${data.message ? ` | آخرین دسته: ${data.message}` : ""}`,
         });
         router.refresh();
 
         if (rem <= 0 || ((data.analyzed ?? 0) === 0 && (data.skippedOfftopic ?? 0) === 0)) {
           setBanner({
             tone: "ok",
-            text: `پردازش کل مقالات صف تکمیل شد ✓ (${totalAnalyzed} مقاله تحلیل شد${totalSent > 0 ? `، ${totalSent} ارسال خودکار` : ""}).`,
+            text: `پردازش کل مقالات صف تکمیل شد ✓ (${totalAnalyzed} مقاله تحلیل شد، ${totalSent} مقاله به بله ارسال شد).`,
           });
           break;
         }
@@ -158,7 +161,7 @@ export function NewsQueueToolbar({
     }
   }
 
-  if (readyCount === 0 && failedCount === 0 && !banner) {
+  if (readyCount === 0 && readyToSendCount === 0 && failedCount === 0 && !banner) {
     return null;
   }
 
@@ -167,17 +170,29 @@ export function NewsQueueToolbar({
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 className="text-sm font-bold text-ink">
-            شتاب‌دهندهٔ ورود مقالات به تحلیل هوش مصنوعی ({displayedReady.toLocaleString("fa-IR")} مقاله در صف)
+            شتاب‌دهندهٔ ورود و ارسال مقالات ({displayedReady.toLocaleString("fa-IR")} آماده تحلیل ·{" "}
+            {readyToSendCount.toLocaleString("fa-IR")} آماده ارسال)
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted">
-            تمام مقالات مرتبط (بدون هیچ محدودیت زمانی و بدون حذف مقالات قدیمی‌تر) در صف حفظ می‌شوند و با پردازش موازی ۴تایی با سرعت ۴ برابر وارد فرآیند ترجمه، خلاصه‌سازی و ارزیابی ارسال می‌شوند.
+            تمام مقالات مرتبط بدون محدودیت تاریخ حفظ می‌شوند، با ۴ پردازشگر موازی تحلیل می‌گردند و مقالات واجد شرایط مستقیماً به کانال بله ارسال می‌شوند (یا علت دقیق عدم ارسال نمایش داده می‌شود).
             {!topicFilterActive
-              ? " پیشنهاد می‌شود ابتدا «فعال‌سازی فیلتر موضوعی اقتصاد AI» را بزنید تا مقالات غیرمرتبط کنار بروند و تمام توان پردازشی صرف مقالات مرتبط شود."
+              ? " پیشنهاد می‌شود «فیلتر موضوعی اقتصاد AI» را فعال کنید تا فقط مقالات مرتبط تحلیل شوند."
               : ""}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            className="rounded-xl border border-ok-line bg-ok-soft px-3.5 py-2 text-xs font-bold text-ok-ink shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={Boolean(busyAction) || autoDraining}
+            onClick={() => handleSingleAction("send_ready_to_bale", { limit: 15 }, "ارسال به بله")}
+            type="button"
+          >
+            {busyAction === "send_ready_to_bale"
+              ? "در حال ارسال به بله…"
+              : `ارسال فوری مقالات آماده به بله${readyToSendCount > 0 ? ` (${readyToSendCount})` : ""}`}
+          </button>
+
           <button
             className={`rounded-xl px-3.5 py-2 text-xs font-bold transition-colors ${
               autoDraining

@@ -35,10 +35,12 @@ export async function POST(request: Request) {
     const gated = await applyTopicGate(backlogIds);
     const analyzedResults =
       gated.pass.length > 0
-        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 46_000 })
+        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 42_000 })
         : [];
     const analyzedIds = analyzedResults.filter((item) => item.ok).map((item) => item.id);
-    const autoSend = analyzedIds.length > 0 ? await maybeRunAutoSend(analyzedIds) : null;
+    // Run auto-send over all unsent qualifying articles (both newly analyzed in
+    // this tick and previously analyzed `READY_TO_SEND` backlog).
+    const autoSend = await maybeRunAutoSend();
 
     return Response.json({
       success: true,

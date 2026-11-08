@@ -1,5 +1,6 @@
 import { expandTargets, type DeliveryTarget } from "@/lib/delivery/types";
 import { runAutoDeliveryPass } from "./index";
+import { describeRejectionReasons } from "./rejection-reasons";
 import { resolveAutoSendRule } from "./resolve-rule";
 import { readScheduleRecord } from "./schedule-store";
 
@@ -22,9 +23,12 @@ export type AutoSendSummary = {
   skippedDuplicates: number;
   skippedReview: number;
   failed: number;
+  heldForBulletin?: boolean;
+  firstError?: string | null;
+  firstRejectionReason?: string | null;
 };
 
-function disabled(destination = "", enabled = true): AutoSendSummary {
+function disabled(destination = "", enabled = true, heldForBulletin = false): AutoSendSummary {
   return {
     attempted: false,
     enabled,
@@ -35,6 +39,9 @@ function disabled(destination = "", enabled = true): AutoSendSummary {
     skippedDuplicates: 0,
     skippedReview: 0,
     failed: 0,
+    heldForBulletin,
+    firstError: null,
+    firstRejectionReason: null,
   };
 }
 
@@ -59,9 +66,13 @@ export async function maybeRunAutoSend(newsIds?: string[]): Promise<AutoSendSumm
   try {
     const rule = await resolveAutoSendRule();
     if (rule.enabled && (await holdsForBulletin(rule.destination))) {
-      return disabled(rule.destination, false);
+      return disabled(rule.destination, false, true);
     }
     const result = await runAutoDeliveryPass({ newsIds, rule });
+    const firstFailed = result.items.find((item) => item.outcome === "failed" && item.errors?.length);
+    const firstRejected = result.items.find(
+      (item) => (item.outcome === "not_matched" || item.outcome === "skipped_review") && item.reasons?.length,
+    );
 
     return {
       attempted: true,
@@ -73,6 +84,9 @@ export async function maybeRunAutoSend(newsIds?: string[]): Promise<AutoSendSumm
       skippedDuplicates: result.skippedDuplicates,
       skippedReview: result.skippedReview,
       failed: result.failed,
+      heldForBulletin: false,
+      firstError: firstFailed?.errors?.[0] ?? null,
+      firstRejectionReason: firstRejected ? describeRejectionReasons(firstRejected.reasons) : null,
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

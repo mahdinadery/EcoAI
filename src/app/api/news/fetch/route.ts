@@ -78,20 +78,9 @@ export async function POST(request: Request) {
       maxDurationMs: 52_000,
     });
 
-    // Auto-send only articles that were actually analyzed during this run.
-    const analyzedIds = analysisResults
-      .filter((item) => item.ok)
-      .map((item) => item.id);
-
-    const autoSend =
-      analyzedIds.length > 0
-        ? await maybeRunAutoSend(analyzedIds)
-        : {
-            ok: true,
-            sent: 0,
-            skipped: 0,
-            reason: "No articles were successfully analyzed in this run.",
-          };
+    // Deliver both newly-analyzed papers and any previously-analyzed qualifying
+    // papers still waiting to go out to Bale.
+    const autoSend = await maybeRunAutoSend();
 
     return Response.json({
       success: true,

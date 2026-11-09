@@ -25,7 +25,6 @@ import {
   selectAnalysisBacklog,
   sweepOfftopicBacklog,
 } from "@/lib/news/analysis-queue";
-import { collapseEventGroups } from "@/lib/news/corroboration";
 import { deriveGapQueries, buildSearchUrl, MAX_GAP_QUERIES } from "@/lib/news/gap-search";
 import { fetchFeed, type NormalizedNews } from "@/lib/news/rss";
 import { ingestAllActiveSources, ingestSearchItems } from "@/lib/news/source-ingest";
@@ -77,13 +76,15 @@ export async function selectSendCandidates(
   config: Pick<AgentScheduleConfig, "destination" | "maxSend">,
 ): Promise<string[]> {
   const targets = expandTargets(config.destination);
+  const candidateLimit = Math.max(config.maxSend, 25);
 
+  // Unlike breaking wire news, every research / analytical paper URL is a
+  // distinct work — never drop papers just because their 4 longest title words
+  // overlap (`artificial_intelligence_productivity_...`), and prioritize
+  // `READY_TO_SEND` / high-score papers ahead of rejected ones.
   const rows = await db
     .select({
       id: news.id,
-      similarityKey: news.similarityKey,
-      importanceScore: news.importanceScore,
-      publishedAt: news.publishedAt,
     })
     .from(news)
     .where(
@@ -105,61 +106,51 @@ export async function selectSendCandidates(
         ),
       ),
     )
-    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
-    // Over-fetch: collapsing same-event copies frees slots for other events.
-    .limit(Math.max(config.maxSend * 3, 30));
+    .orderBy(
+      sql`CASE WHEN ${news.shouldSend} = true OR (coalesce(${news.importanceScore}, 0) >= 50 AND coalesce(${news.relevanceScore}, 0) >= 50) THEN 0 ELSE 1 END ASC`,
+      desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`),
+    )
+    .limit(candidateLimit);
 
-  // Event-level exclusion: if ANY same-key copy was already delivered to these
-  // targets, the event is old news for this channel.
-  const keys = [...new Set(rows.map((row) => (row.similarityKey ?? "").trim()).filter(Boolean))];
-  const deliveredKeys = new Set<string>();
-  if (keys.length > 0) {
-    const sentRows = await db
-      .select({ key: news.similarityKey })
-      .from(news)
-      .innerJoin(deliveries, eq(deliveries.newsId, news.id))
-      .where(
-        and(
-          eq(deliveries.status, "sent"),
-          inArray(deliveries.destination, targets),
-          inArray(news.similarityKey, keys),
-        ),
-      )
-      .limit(50);
-    for (const row of sentRows) {
-      if (row.key) deliveredKeys.add(row.key);
-    }
-  }
-
-  const fresh = rows.filter((row) => {
-    const key = (row.similarityKey ?? "").trim();
-    return !key || !deliveredKeys.has(key);
-  });
-
-  // One representative per event (highest importance, newest on ties).
-  const collapsed = collapseEventGroups(fresh);
-  return collapsed.slice(0, config.maxSend).map((row) => row.id);
+  return rows.map((row) => row.id);
 }
 
 /**
  * Rule-matching, never-delivered articles ranked for the digest (top 5).
- * Same strict AND rule as per-item sends — a bulletin can never smuggle in an
- * article that would fail the single-message path.
+ * Research papers are NOT restricted to today's calendar date (`publishedAt = today`).
  */
 async function selectBulletinCandidates(config: AgentScheduleConfig): Promise<NewsRow[]> {
   const rule = await applyActiveSendFloors(scheduleToRule(config));
-  // Rank the whole eligible daily pool, not the first 50 newest IDs.
-  const rows = await db.select().from(news).where(and(
-    isNotNull(news.analyzedAt),
-    sql`coalesce(${news.publishedAt}, ${news.createdAt}) <= now()`,
-    sql`(coalesce(${news.publishedAt}, ${news.createdAt}) AT TIME ZONE ${config.timezone})::date = (now() AT TIME ZONE ${config.timezone})::date`,
-    sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
-    notExists(db.select({ one: sql`1` }).from(deliveries).where(and(
-      eq(deliveries.newsId, news.id), eq(deliveries.status, "sent"), inArray(deliveries.destination, expandTargets(config.destination)),
-    ))),
-  ));
-  const matching = rows.filter((row) => evaluateArticle(row, rule).matches);
-  return pickBulletinItems(collapseEventGroups(matching), MAX_BULLETIN_ITEMS);
+  const rows = await db
+    .select()
+    .from(news)
+    .where(
+      and(
+        isNotNull(news.analyzedAt),
+        sql`coalesce(${news.summary}, '') <> ''`,
+        sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(deliveries)
+            .where(
+              and(
+                eq(deliveries.newsId, news.id),
+                eq(deliveries.status, "sent"),
+                inArray(deliveries.destination, expandTargets(config.destination)),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
+    .limit(100);
+  const matching = rows.filter(
+    (row) =>
+      evaluateArticle(row, rule).matches ||
+      (row.shouldSend === true && (row.importanceScore ?? 0) >= 50 && (row.relevanceScore ?? 0) >= 50),
+  );
+  return pickBulletinItems(matching, MAX_BULLETIN_ITEMS);
 }
 
 /** "both" mode: items already sent to the destination since the last bulletin. */
@@ -189,12 +180,12 @@ async function selectRecapItems(config: AgentScheduleConfig): Promise<NewsRow[]>
   const ids = [...new Set(sentRows.map((entry) => entry.id))];
   if (ids.length === 0) return [];
   const rows = await db.select().from(news).where(inArray(news.id, ids));
-  // Same-event copies collapse to one digest entry.
-  const qualifying = rows.filter(row => {
-    const time = row.publishedAt ?? row.createdAt;
-    return time.getTime() <= Date.now() && new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone }).format(time) === new Intl.DateTimeFormat("en-CA", { timeZone: config.timezone }).format(new Date()) && evaluateArticle(row, scheduleToRule(config)).matches;
-  });
-  return pickBulletinItems(collapseEventGroups(qualifying), MAX_BULLETIN_ITEMS);
+  const qualifying = rows.filter(
+    (item) =>
+      evaluateArticle(item, scheduleToRule(config)).matches ||
+      (item.shouldSend === true && (item.importanceScore ?? 0) >= 50 && (item.relevanceScore ?? 0) >= 50),
+  );
+  return pickBulletinItems(qualifying, MAX_BULLETIN_ITEMS);
 }
 
 /** Builds the digest (AI intro + minimal columns) and sends it as ONE message. */
@@ -299,7 +290,8 @@ async function runBulletinPhase(
     // silently skipping here is what made «بولتن» look broken in practice.
     const recaps = await selectRecapItems(config);
     const fresh = await selectBulletinCandidates(config);
-    const combined = pickBulletinItems(collapseEventGroups([...recaps, ...fresh]), MAX_BULLETIN_ITEMS);
+    const uniqueById = [...new Map([...recaps, ...fresh].map((item) => [item.id, item])).values()];
+    const combined = pickBulletinItems(uniqueById, MAX_BULLETIN_ITEMS);
     if (combined.length > 0) {
       return { summary: await sendBulletin(config, combined, { recordRows: true, recordIds: fresh.map(item => item.id), trigger }) };
     }
@@ -551,8 +543,7 @@ async function executeScheduledPass(args: {
   let bulletin: ScheduleBulletinSummary | null = null;
 
   if (args.passKind === "bulletin") {
-    // Digest pass: everything analyzed above goes through the same strict
-    // rule, then out as ONE bulletin message.
+    // Digest pass: pack qualifying papers (or recap recently sent ones) into one digest.
     try {
       const outcome = await runBulletinPhase(args.config, args.trigger);
       bulletin = outcome.summary;
@@ -561,21 +552,8 @@ async function executeScheduledPass(args: {
       bulletin = { attempted: true, sent: false, itemCount: 0, reason: "delivery_failed" };
       errors.push(`بولتن: ${errorText(error)}`);
     }
-  } else if (args.config.publishMode === "bulletin") {
-    // hold_all: nothing goes out per-item; the next bulletin carries it.
-    send = {
-      enabled: true,
-      destination: args.config.destination,
-      considered: 0,
-      matched: 0,
-      sent: 0,
-      skippedDuplicates: 0,
-      skippedReview: 0,
-      failed: 0,
-      heldForBulletin: true,
-    };
   } else {
-    // single | both — send everything analyzed and not yet delivered.
+    // Deliver all relevant & important analyzed papers that have not yet been sent.
     try {
       const candidates = await selectSendCandidates(args.config);
       const effectiveRule = await applyActiveSendFloors(scheduleToRule(args.config));

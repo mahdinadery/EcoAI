@@ -21,6 +21,7 @@ type QueueActionResponse = {
   sweptOfftopic?: number;
   requeued?: number;
   remainingReady?: number;
+  remainingReadyToSend?: number;
   firstError?: string | null;
   message?: string;
   detail?: string;
@@ -38,8 +39,10 @@ export function NewsQueueToolbar({
   const [autoDraining, setAutoDraining] = useState(false);
   const stopRef = useRef(false);
   const [liveReadyOverride, setLiveReadyOverride] = useState<number | null>(null);
+  const [liveSendOverride, setLiveSendOverride] = useState<number | null>(null);
   const [banner, setBanner] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
   const displayedReady = liveReadyOverride ?? readyCount;
+  const displayedReadyToSend = liveSendOverride ?? readyToSendCount;
 
   function headers(): Record<string, string> {
     return {
@@ -63,6 +66,44 @@ export function NewsQueueToolbar({
     setBanner(null);
 
     try {
+      if (action === "send_ready_to_bale") {
+        let totalSent = 0;
+        let lastMsg = "";
+        for (let pass = 1; pass <= 20; pass += 1) {
+          const data = await callQueueApi({ action: "send_ready_to_bale", limit: 20 });
+          if (!data.success) {
+            setBanner({
+              tone: "err",
+              text: `${data.message ?? `اجرای «${label}» ناموفق بود.`}${data.detail ? ` (${data.detail})` : ""}`,
+            });
+            return;
+          }
+          totalSent += data.autoSent ?? 0;
+          lastMsg = data.message ?? "";
+          if (typeof data.remainingReadyToSend === "number") {
+            setLiveSendOverride(data.remainingReadyToSend);
+          }
+          if (data.firstError && (data.autoSent ?? 0) === 0) {
+            setBanner({ tone: "err", text: lastMsg || data.firstError });
+            return;
+          }
+          if ((data.autoSent ?? 0) === 0) break;
+          setBanner({
+            tone: "ok",
+            text: `در حال ارسال پیوسته به کانال بله… تا این لحظه ${totalSent} مقالهٔ مرتبط و بااهمیت ارسال شد.`,
+          });
+        }
+        setBanner({
+          tone: "ok",
+          text:
+            totalSent > 0
+              ? `تمام مقالات مرتبط و بااهمیت ارسال شدند ✓ (مجموعاً ${totalSent} مقاله به کانال بله ارسال شد).`
+              : (lastMsg || "مقالهٔ ارسال‌نشدهٔ واجد شرایطی باقی نمانده است."),
+        });
+        router.refresh();
+        return;
+      }
+
       const data = await callQueueApi({ action, ...payload });
       if (!data.success) {
         setBanner({
@@ -73,6 +114,9 @@ export function NewsQueueToolbar({
       }
       if (typeof data.remainingReady === "number") {
         setLiveReadyOverride(data.remainingReady);
+      }
+      if (typeof data.remainingReadyToSend === "number") {
+        setLiveSendOverride(data.remainingReadyToSend);
       }
       const hasWarn = Boolean(data.firstError) && (data.autoSent ?? 0) === 0;
       setBanner({
@@ -171,7 +215,7 @@ export function NewsQueueToolbar({
         <div>
           <h2 className="text-sm font-bold text-ink">
             شتاب‌دهندهٔ ورود و ارسال مقالات ({displayedReady.toLocaleString("fa-IR")} آماده تحلیل ·{" "}
-            {readyToSendCount.toLocaleString("fa-IR")} آماده ارسال)
+            {displayedReadyToSend.toLocaleString("fa-IR")} آماده ارسال)
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted">
             تمام مقالات مرتبط بدون محدودیت تاریخ حفظ می‌شوند، با ۴ پردازشگر موازی تحلیل می‌گردند و مقالات واجد شرایط مستقیماً به کانال بله ارسال می‌شوند (یا علت دقیق عدم ارسال نمایش داده می‌شود).
@@ -190,7 +234,7 @@ export function NewsQueueToolbar({
           >
             {busyAction === "send_ready_to_bale"
               ? "در حال ارسال به بله…"
-              : `ارسال فوری مقالات آماده به بله${readyToSendCount > 0 ? ` (${readyToSendCount})` : ""}`}
+              : `ارسال همهٔ مقالات مرتبط و بااهمیت به بله${displayedReadyToSend > 0 ? ` (${displayedReadyToSend}+)` : ""}`}
           </button>
 
           <button

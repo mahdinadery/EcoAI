@@ -98,7 +98,11 @@ export async function POST(request: Request) {
         ...baseRule,
         enabled: true,
         destination: baseRule.destination === "both" ? ("both" as const) : ("bale" as const),
-        maxItemsPerPass: Math.max(1, Math.min(25, Math.round(body.limit ?? 15))),
+        minImportance: Math.min(baseRule.minImportance, 55),
+        minRelevance: Math.min(baseRule.minRelevance, 55),
+        minNovelty: 0,
+        requireAiRecommendation: false,
+        maxItemsPerPass: Math.max(1, Math.min(25, Math.round(body.limit ?? 20))),
       };
 
       const pass = await runAutoDeliveryPass({ rule: baleRule });
@@ -115,19 +119,20 @@ export async function POST(request: Request) {
           autoSent: pass.sent,
           failed: pass.failed,
           remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
+          remainingReadyToSend: summary.byStatus.READY_TO_SEND ?? 0,
           firstError: failedEntry?.errors?.[0] ?? null,
           summary,
-          message: `${pass.sent} مقالهٔ واجد شرایط با موفقیت به کانال بله ارسال شد ✓ (حد نصاب فعال: اهمیت ≥ ${baleRule.minImportance} و ارتباط ≥ ${baleRule.minRelevance}).`,
+          message: `${pass.sent} مقالهٔ مرتبط و بااهمیت با موفقیت به کانال بله ارسال شد ✓.`,
         });
       }
 
       const reasonText = failedEntry?.errors?.[0]
         ? `خطای اتصال/ارسال به بله: ${failedEntry.errors[0]}`
         : pass.considered === 0
-          ? "هیچ مقالهٔ تحلیل‌شدهٔ ارسال‌نشده‌ای در دیتابیس وجود ندارد."
+          ? "تمام مقالات تحلیل‌شدهٔ واجد شرایط قبلاً به بله ارسال شده‌اند."
           : rejectedEntries.length > 0
-            ? `از ${pass.considered} مقالهٔ بررسی‌شده، هیچ‌کدام به حد نصاب ارسال (اهمیت ≥ ${baleRule.minImportance} و ارتباط ≥ ${baleRule.minRelevance}${baleRule.requireAiRecommendation ? " + تأیید AI" : ""}) نرسید — نمونه علت: «${rejectedEntries[0].title.slice(0, 60)}…» ← ${describeRejectionReasons(rejectedEntries[0].reasons)}`
-            : "تمام مقالات واجد شرایط قبلاً به بله ارسال شده‌اند.";
+            ? `از ${pass.considered} مقالهٔ بررسی‌شده، هیچ‌کدام مرتبط و بااهمیت تشخیص داده نشد (اهمیت ≥ ${baleRule.minImportance} و ارتباط ≥ ${baleRule.minRelevance}) — نمونه: «${rejectedEntries[0].title.slice(0, 60)}…» ← ${describeRejectionReasons(rejectedEntries[0].reasons)}`
+            : "تمام مقالات مرتبط و بااهمیت قبلاً به بله ارسال شده‌اند.";
 
       return Response.json({
         success: true,
@@ -135,9 +140,10 @@ export async function POST(request: Request) {
         autoSent: 0,
         failed: pass.failed,
         remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
-        firstError: failedEntry?.errors?.[0] ?? reasonText,
+        remainingReadyToSend: summary.byStatus.READY_TO_SEND ?? 0,
+        firstError: failedEntry?.errors?.[0] ?? null,
         summary,
-        message: `ارسالی انجام نشد — ${reasonText}`,
+        message: pass.failed > 0 ? `ارسال ناموفق — ${reasonText}` : reasonText,
       });
     }
 

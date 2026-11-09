@@ -1,16 +1,13 @@
-import { expandTargets, type DeliveryTarget } from "@/lib/delivery/types";
 import { runAutoDeliveryPass } from "./index";
 import { describeRejectionReasons } from "./rejection-reasons";
 import { resolveAutoSendRule } from "./resolve-rule";
-import { readScheduleRecord } from "./schedule-store";
 
 /**
  * Shared, failure-proof hook so the auto-delivery pass can run after an event
- * (news fetched, or an article analyzed) without ever breaking that flow.
+ * (papers fetched, or a paper analyzed) without ever breaking that flow.
  *
- * The delivery pass is fire-and-report: it returns a compact summary for the UI,
- * and any error is swallowed into `attempted: false` rather than thrown, so an
- * unreachable provider can never fail the analysis/ingestion response.
+ * Unlike a breaking-news ticker, every relevant & important research paper is
+ * delivered individually (never held back behind a 5-item bulletin cap).
  */
 
 export type AutoSendSummary = {
@@ -28,7 +25,7 @@ export type AutoSendSummary = {
   firstRejectionReason?: string | null;
 };
 
-function disabled(destination = "", enabled = true, heldForBulletin = false): AutoSendSummary {
+function disabled(destination = "", enabled = true): AutoSendSummary {
   return {
     attempted: false,
     enabled,
@@ -39,35 +36,15 @@ function disabled(destination = "", enabled = true, heldForBulletin = false): Au
     skippedDuplicates: 0,
     skippedReview: 0,
     failed: 0,
-    heldForBulletin,
+    heldForBulletin: false,
     firstError: null,
     firstRejectionReason: null,
   };
 }
 
-/**
- * «فقط بولتن» (hold_all): while the schedule is enabled in bulletin mode, a
- * per-item auto send to an overlapping destination must wait for the digest —
- * otherwise this post-analysis hook leaks singles and the digest later finds
- * nothing left to pack (the "bulletin doesn't work" symptom).
- */
-async function holdsForBulletin(destination: DeliveryTarget): Promise<boolean> {
-  try {
-    const record = await readScheduleRecord();
-    if (!record.enabled || record.publishMode !== "bulletin") return false;
-    const held = new Set(expandTargets(record.destination));
-    return expandTargets(destination).some((target) => held.has(target));
-  } catch {
-    return false;
-  }
-}
-
 export async function maybeRunAutoSend(newsIds?: string[]): Promise<AutoSendSummary> {
   try {
     const rule = await resolveAutoSendRule();
-    if (rule.enabled && (await holdsForBulletin(rule.destination))) {
-      return disabled(rule.destination, false, true);
-    }
     const result = await runAutoDeliveryPass({ newsIds, rule });
     const firstFailed = result.items.find((item) => item.outcome === "failed" && item.errors?.length);
     const firstRejected = result.items.find(

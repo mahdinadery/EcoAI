@@ -233,10 +233,17 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
       reason,
     } = result.analysis;
 
-    // Borderline relevance gets ONE cheap second opinion — grounded in the first paragraph too.
+    // Only run the secondary borderline check when the main AI model did NOT
+    // already recommend sending and relevance is below `minRelevanceToSend`.
+    // Research papers explicitly approved (`shouldSend === true`) or meeting
+    // `minRelevanceToSend` are never vetoed by a tiny 16-token secondary call.
     let relevanceGrade: string | null = null;
     let combinedUsage: AiTokenUsage | null = result.usage;
-    if (isBorderlineRelevance(relevance, config.decisionRules)) {
+    if (
+      !shouldSend &&
+      relevance < config.decisionRules.minRelevanceToSend &&
+      isBorderlineRelevance(relevance, config.decisionRules)
+    ) {
       try {
         const gradeOutcome = await gradeRelevanceWithUsage({
           title: translatedTitle ? `${translatedTitle} (${article.title})` : article.title,
@@ -251,6 +258,8 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
         relevanceGrade = null;
       }
     }
+
+    const effectiveShouldSend = shouldSend && relevanceGrade !== "rejected";
 
     try {
       const [updated] = await db
@@ -267,11 +276,11 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
           hashtags,
           entityTags: entities,
           relevanceGrade,
-          shouldSend,
+          shouldSend: effectiveShouldSend,
           analysisReason: reason,
           analyzedAt: new Date(),
           aiConfigVersion: config.version,
-          status: shouldSend ? "READY_TO_SEND" : "AI_ANALYZED",
+          status: effectiveShouldSend ? "READY_TO_SEND" : "AI_ANALYZED",
           updatedAt: new Date(),
         })
         .where(eq(news.id, id))

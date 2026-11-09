@@ -32,12 +32,14 @@ function isBaleEnvConfigured(): boolean {
 }
 
 export async function applyActiveSendFloors(rule: AutoSendRule): Promise<AutoSendRule> {
-  try {
-    const config = await getActiveAiConfig();
-    return enforceDecisionRuleFloors(rule, config.decisionRules);
-  } catch {
-    return rule;
-  }
+  // Respect the caller/schedule rule directly so legacy breaking-news floors
+  // stored in older `ai_configurations` rows (e.g. 70/75/80) never silently
+  // block relevant & important research papers (`importance >= 50, relevance >= 50`).
+  return inferDefaultDestinationWhenUnset(rule, {
+    envDestinationRaw: process.env[AUTO_SEND_ENV.destination],
+    baleConfigured: isBaleEnvConfigured(),
+    scheduleDestination: rule.destination,
+  });
 }
 
 export async function resolveAutoSendRule(): Promise<AutoSendRule> {
@@ -49,21 +51,33 @@ export async function resolveAutoSendRule(): Promise<AutoSendRule> {
     scheduleDestination = null;
   }
 
+  const baleConfigured = isBaleEnvConfigured();
+  const envDestinationRaw = process.env[AUTO_SEND_ENV.destination];
+
   try {
     const config = await getActiveAiConfig();
     const policy = config.autoSendPolicy;
-    const baseRule = policy?.useCustom
-      ? policyToRule(policy)
-      : inferDefaultDestinationWhenUnset(loadAutoSendRule(), {
-          envDestinationRaw: process.env[AUTO_SEND_ENV.destination],
-          baleConfigured: isBaleEnvConfigured(),
-          scheduleDestination,
-        });
-    return enforceDecisionRuleFloors(baseRule, config.decisionRules);
+    if (policy?.useCustom) {
+      const customRule = policyToRule(policy);
+      // If `useCustom` was saved while destination still had its untouched `"local"`
+      // UI default, route to `"bale"` when Bale is configured unless `AUTO_SEND_DESTINATION=local`
+      // was explicitly requested via environment variable.
+      return inferDefaultDestinationWhenUnset(customRule, {
+        envDestinationRaw,
+        baleConfigured,
+        scheduleDestination,
+      });
+    }
+
+    return inferDefaultDestinationWhenUnset(loadAutoSendRule(), {
+      envDestinationRaw,
+      baleConfigured,
+      scheduleDestination,
+    });
   } catch {
     return inferDefaultDestinationWhenUnset(loadAutoSendRule(), {
-      envDestinationRaw: process.env[AUTO_SEND_ENV.destination],
-      baleConfigured: isBaleEnvConfigured(),
+      envDestinationRaw,
+      baleConfigured,
       scheduleDestination,
     });
   }

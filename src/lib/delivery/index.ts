@@ -116,6 +116,12 @@ async function deliverToOne(
       trigger,
       providerMessageId: outcome.providerMessageId,
     });
+    if (outcome.ok && destination === "bale") {
+      await db
+        .update(news)
+        .set({ status: "SENT", updatedAt: new Date() })
+        .where(eq(news.id, article.id));
+    }
   } catch (error) {
     // Persistence problems are reported, but never rewrite the provider's verdict.
     const detail = error instanceof Error ? error.message : String(error);
@@ -145,32 +151,8 @@ export async function loadMessageExtras(article: NewsRow): Promise<MessageExtras
   const extras: MessageExtras = {};
   try {
     const windowStart = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
-
-    if (article.similarityKey) {
-      const rows = await db
-        .select({ source: news.source, url: news.url })
-        .from(news)
-        .where(
-          and(
-            eq(news.similarityKey, article.similarityKey),
-            gte(news.createdAt, new Date(Date.now() - 72 * 60 * 60 * 1000)),
-          ),
-        )
-        .limit(20);
-      // One entry per outlet (first URL wins) — the message lists every source
-      // of the chosen story with its link.
-      const seen = new Set<string>([article.source]);
-      const others: Array<{ source: string; url: string }> = [];
-      for (const row of rows) {
-        if (seen.has(row.source)) continue;
-        seen.add(row.source);
-        others.push({ source: row.source, url: row.url });
-      }
-      if (others.length > 0) extras.corroborationItems = others;
-    }
-
     const entityTags = article.entityTags ?? [];
-    if (article.similarityKey || entityTags.length > 0) {
+    if (entityTags.length > 0) {
       const delivered = await db
         .select({ title: news.title, translatedTitle: news.translatedTitle })
         .from(news)
@@ -180,9 +162,7 @@ export async function loadMessageExtras(article: NewsRow): Promise<MessageExtras
             eq(deliveries.status, "sent"),
             gte(deliveries.sentAt, windowStart),
             sql`${news.id} <> ${article.id}`,
-            article.similarityKey
-              ? sql`(${news.similarityKey} = ${article.similarityKey} OR jsonb_exists_any(${news.entityTags}, ${entityTags}::text[]))`
-              : sql`jsonb_exists_any(${news.entityTags}, ${entityTags}::text[])`,
+            sql`jsonb_exists_any(${news.entityTags}, ${entityTags}::text[])`,
           ),
         )
         .orderBy(desc(deliveries.sentAt))

@@ -388,13 +388,13 @@ export const DEFAULT_FEATURES: AiFeaturesConfig = {
   },
 };
 
-/** Default decision rules: AND semantics (importance >= 65 AND relevance >= 70). */
+/** Default decision rules calibrated for research & analytical papers (importance >= 55 AND relevance >= 60). */
 export const DEFAULT_DECISION_RULES: AiDecisionRules = {
-  minImportanceToSend: 65,
-  minRelevanceToSend: 70,
+  minImportanceToSend: 55,
+  minRelevanceToSend: 60,
   minNoveltyToSend: 0,
   combine: "all",
-  overallSendThreshold: 70,
+  overallSendThreshold: 60,
   enableAutoRecommendation: true,
 };
 

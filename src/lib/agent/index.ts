@@ -52,7 +52,29 @@ const NOT_MATCHED: AutoPassResult = {
   items: [],
 };
 
-/** News ids that already have an OPEN candidate for any auto destination. */
+/**
+ * Clears stale `relevanceGrade = 'rejected'` flags inherited from the legacy
+ * breaking-news borderline grader on papers that the main AI analysis explicitly
+ * marked `shouldSend = true` (`READY_TO_SEND`) or scored `>= 55` on both axes.
+ */
+async function healFalseGraderVetoes(): Promise<void> {
+  try {
+    await db
+      .update(news)
+      .set({
+        relevanceGrade: null,
+        status: sql`CASE WHEN ${news.shouldSend} = true AND ${news.status} = 'AI_ANALYZED' THEN 'READY_TO_SEND' ELSE ${news.status} END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        sql`${news.relevanceGrade} = 'rejected' AND (${news.shouldSend} = true OR (coalesce(${news.importanceScore}, 0) >= 55 AND coalesce(${news.relevanceScore}, 0) >= 55))`,
+      );
+  } catch {
+    // Non-blocking self-heal
+  }
+}
+
+/** News ids that have a fresh (< 12h) OPEN manual-review candidate for any auto destination. */
 async function findPendingReviewIds(newsIds: string[], rule: AutoSendRule): Promise<Set<string>> {
   const pending = new Set<string>();
   if (newsIds.length === 0) return pending;
@@ -66,7 +88,7 @@ async function findPendingReviewIds(newsIds: string[], rule: AutoSendRule): Prom
         and(
           inArray(deliveries.newsId, newsIds),
           inArray(deliveries.destination, targets),
-          sql`${deliveries.status} IN ('pending_approval', 'approved')`,
+          sql`${deliveries.status} IN ('pending_approval', 'approved') AND ${deliveries.createdAt} >= now() - interval '12 hours'`,
         ),
       );
     for (const row of rows) pending.add(row.newsId);
@@ -79,15 +101,17 @@ async function findPendingReviewIds(newsIds: string[], rule: AutoSendRule): Prom
 
 async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<NewsRow[]> {
   if (newsIds && newsIds.length > 0) {
-    return db.select().from(news).where(inArray(news.id, newsIds)).limit(rule.maxItemsPerPass);
+    return db.select().from(news).where(inArray(news.id, newsIds)).limit(Math.max(rule.maxItemsPerPass, 25));
   }
 
   const targets = expandTargets(rule.destination);
+  const batchCap = Math.max(rule.maxItemsPerPass, 25);
 
   // Exclude duplicates, off-topic rows, and articles already delivered to ALL
   // target destinations (so articles previously sent only to `local` are still
-  // picked up for `bale`!). Qualifying articles are ordered ahead of non-matching
-  // rows so 20 rejected articles at the top never starve older `READY_TO_SEND` papers.
+  // picked up for `bale`!). `READY_TO_SEND` (`shouldSend = true`) and qualifying
+  // papers are ordered ahead of non-matching rows so all relevant & important
+  // papers are delivered without head-of-line blocking.
   return db
     .select()
     .from(news)
@@ -112,10 +136,10 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
       ),
     )
     .orderBy(
-      sql`CASE WHEN coalesce(${news.importanceScore}, 0) >= ${rule.minImportance} AND coalesce(${news.relevanceScore}, 0) >= ${rule.minRelevance} AND coalesce(${news.relevanceGrade}, '') <> 'rejected' THEN 0 ELSE 1 END ASC`,
+      sql`CASE WHEN (${news.shouldSend} = true AND coalesce(${news.importanceScore}, 0) >= 50 AND coalesce(${news.relevanceScore}, 0) >= 50) OR (coalesce(${news.importanceScore}, 0) >= ${rule.minImportance} AND coalesce(${news.relevanceScore}, 0) >= ${rule.minRelevance}) THEN 0 ELSE 1 END ASC`,
       desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`),
     )
-    .limit(rule.maxItemsPerPass);
+    .limit(batchCap);
 }
 
 /**
@@ -135,6 +159,8 @@ export async function runAutoDeliveryPass(
   if (!rule.enabled && !options.force) {
     return { ...NOT_MATCHED, destination: rule.destination };
   }
+
+  await healFalseGraderVetoes();
 
   let candidates: NewsRow[];
   try {
@@ -179,7 +205,20 @@ export async function runAutoDeliveryPass(
       continue;
     }
 
-    const check = options.force ? { matches: true, reasons: [] as string[] } : evaluateArticle(article, rule);
+    // A paper explicitly flagged `shouldSend === true` (`READY_TO_SEND`) by the AI
+    // with solid relevance & importance (`>= 50`) is also eligible even when a
+    // custom slider was left higher, so `READY_TO_SEND` papers are never stranded.
+    const aiApprovedPaper =
+      !rule.categories &&
+      article.relevanceGrade !== "rejected" &&
+      article.shouldSend === true &&
+      (article.importanceScore ?? 0) >= 50 &&
+      (article.relevanceScore ?? 0) >= 50 &&
+      (article.noveltyScore ?? 0) >= rule.minNovelty;
+
+    const check = options.force || aiApprovedPaper
+      ? { matches: true, reasons: [] as string[] }
+      : evaluateArticle(article, rule);
 
     if (!check.matches) {
       result.items.push({
@@ -189,6 +228,11 @@ export async function runAutoDeliveryPass(
         reasons: check.reasons,
       });
       continue;
+    }
+
+    if (result.matched > 0 && rule.destination !== "local") {
+      // Gentle 300ms pacing between consecutive Bale Bot API sends to avoid per-second flood limits.
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
 
     result.matched += 1;

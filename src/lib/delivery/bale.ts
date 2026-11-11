@@ -1,4 +1,5 @@
 import { sendBaleMessage } from "@/lib/bale/client";
+import { splitBaleMessage } from "./bulletin";
 import { stripLegacyTitleFlag } from "./message";
 import type { ProviderOutcome } from "./types";
 
@@ -14,16 +15,22 @@ import type { ProviderOutcome } from "./types";
 export async function deliverToBale(text: string): Promise<ProviderOutcome> {
   // Markdown parse mode renders the title hyperlinks; sendBaleMessage falls
   // back to plain text automatically if Bale rejects the markup.
-  const result = await sendBaleMessage(stripLegacyTitleFlag(text), { parseMode: "Markdown" });
+  // Bale rejects messages over ~4096 chars, so long texts go out as chunks.
+  const chunks = splitBaleMessage(stripLegacyTitleFlag(text));
+  let lastMessageId: string | null = null;
 
-  if (result.ok) {
-    return { ok: true, providerMessageId: result.messageId, errorMessage: null };
+  for (const chunk of chunks) {
+    const result = await sendBaleMessage(chunk, { parseMode: "Markdown" });
+    if (!result.ok) {
+      // client.ts already redacts secrets from message/detail.
+      return {
+        ok: false,
+        providerMessageId: null,
+        errorMessage: result.detail ? `${result.message} (${result.detail})` : result.message,
+      };
+    }
+    lastMessageId = result.messageId;
   }
 
-  // client.ts already redacts secrets from message/detail.
-  return {
-    ok: false,
-    providerMessageId: null,
-    errorMessage: result.detail ? `${result.message} (${result.detail})` : result.message,
-  };
+  return { ok: true, providerMessageId: lastMessageId, errorMessage: null };
 }

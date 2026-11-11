@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   MAX_BULLETIN_ITEMS,
+  BALE_MESSAGE_LIMIT,
   DEFAULT_BULLETIN_SETTINGS,
   resolveBulletinSettings,
   validateBulletinSettings,
   buildBulletinMessage,
   pickBulletinItems,
+  splitBaleMessage,
 } from "../src/lib/delivery/bulletin.ts";
 
 const item = (overrides) => ({
@@ -188,4 +190,46 @@ test('daily ranking prioritizes both relevance and importance, capped at five', 
   const result = pickBulletinItems(rows,5);
   assert.equal(result.length,5);
   assert.deepEqual(result.map(row=>row.id),['0','1','2','3','4']);
+});
+
+test("splitBaleMessage: short text stays one chunk, long text splits under the limit", () => {
+  assert.deepEqual(splitBaleMessage("سلام"), ["سلام"]);
+  const long = Array.from({ length: 20 }, (_, i) => `بخش ${i + 1}: ` + "متن ".repeat(120)).join("\n\n");
+  assert.ok(long.length > BALE_MESSAGE_LIMIT);
+  const chunks = splitBaleMessage(long);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.ok(chunk.length <= BALE_MESSAGE_LIMIT, `chunk too long: ${chunk.length}`);
+  }
+  assert.equal(chunks.join("\n\n").replace(/\n{2,}/g, "\n\n").includes("بخش 20"), true);
+});
+
+test("splitBaleMessage: never cuts a Markdown link line in half", () => {
+  const link = "[لینک اصلی خبر](https://example.com/a/very/long/path?x=1)";
+  const text = ["مقدمه", link, "پایان"].join("\n\n");
+  const chunks = splitBaleMessage(text, 60);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.some((chunk) => chunk.includes(link)));
+});
+
+test("buildBulletinMessage: five full items can exceed one Bale message and must split", () => {
+  const items = Array.from({ length: 5 }, (_, i) => item({
+    id: `n${i}`,
+    title: "عنوان فارسی طولانی مقاله پژوهشی ".repeat(4),
+    translatedTitle: "عنوان ترجمه‌شده ".repeat(4),
+    oneLiner: "خلاصه پژوهشی. ".repeat(40),
+    whyItMatters: "چرا مهم است. ".repeat(20),
+    hashtags: "#اقتصاد #هوش_مصنوعی ".repeat(10),
+    url: `https://example.com/news/${i}?utm_source=feed&campaign=daily`,
+  }));
+  const text = buildBulletinMessage({
+    intro: "مقدمه بولتن. ".repeat(40),
+    items,
+    generatedAt: new Date("2026-11-10T12:00:00Z"),
+    timezone: "Asia/Tehran",
+  });
+  assert.ok(text.length > BALE_MESSAGE_LIMIT, `expected over-limit bulletin, got ${text.length}`);
+  const chunks = splitBaleMessage(text);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) assert.ok(chunk.length <= BALE_MESSAGE_LIMIT);
 });

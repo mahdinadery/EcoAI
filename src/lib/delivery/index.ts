@@ -277,6 +277,8 @@ export async function sendBulletinDelivery(params: {
   for (const destination of destinations) {
     let outcome: ProviderOutcome;
     try {
+      // The Bale provider splits long digests into sub-limit chunks itself;
+      // rows below are recorded only after every chunk succeeds.
       outcome = await PROVIDERS[destination](text);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

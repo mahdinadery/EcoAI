@@ -2,7 +2,7 @@ import { db } from "@/db";
 import { news } from "@/db/schema";
 import { checkAdminAccess } from "@/lib/admin/access";
 import { runAutoDeliveryPass } from "@/lib/agent";
-import { maybeRunAutoSend, type AutoSendSummary } from "@/lib/agent/auto-hook";
+import type { AutoSendSummary } from "@/lib/agent/auto-hook";
 import { describeRejectionReasons } from "@/lib/agent/rejection-reasons";
 import { resolveAutoSendRule } from "@/lib/agent/resolve-rule";
 import {
@@ -11,13 +11,8 @@ import {
   validateAiConfigInput,
 } from "@/lib/ai/config-service";
 import type { AiConfigInput } from "@/lib/ai/config-types";
-import {
-  analyzeSequentially,
-  applyTopicGate,
-  recoverStaleProcessing,
-  selectAnalysisBacklog,
-  sweepOfftopicBacklog,
-} from "@/lib/news/analysis-queue";
+import { sweepOfftopicBacklog } from "@/lib/news/analysis-queue";
+import { drainArticleQueue } from "@/lib/news/article-queue";
 import { getNewsStatusSummary } from "@/lib/news/news-admin";
 import {
   AI_ECONOMICS_PACK,
@@ -106,6 +101,9 @@ export async function POST(request: Request) {
       };
 
       const pass = await runAutoDeliveryPass({ rule: baleRule });
+      if (pass.busy) {
+        return Response.json({ success: false, action, message: "صف در حال پردازش است؛ پس از پایان آن دوباره تلاش کنید." }, { status: 409 });
+      }
       const summary = await getNewsStatusSummary();
       const failedEntry = pass.items.find((item) => item.outcome === "failed" && item.errors?.length);
       const rejectedEntries = pass.items.filter(
@@ -149,52 +147,29 @@ export async function POST(request: Request) {
 
     if (action === "analyze_batch") {
       const batchSize = Math.max(1, Math.min(24, Math.round(body.limit ?? 15)));
-      const concurrency = Math.max(1, Math.min(6, Math.round(body.concurrency ?? 4)));
-      await recoverStaleProcessing();
-
-      const selectedIds = await selectAnalysisBacklog(batchSize);
-      if (selectedIds.length === 0) {
-        const catchupSend = await maybeRunAutoSend();
-        const summary = await getNewsStatusSummary();
-        return Response.json({
-          success: true,
-          action,
-          analyzed: 0,
-          failed: 0,
-          skippedOfftopic: 0,
-          autoSent: catchupSend.sent,
-          remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
-          firstError: catchupSend.firstError ?? null,
-          summary,
-          message: `هیچ مقالهٔ تحلیل‌نشده‌ای در صف نمانده است${explainZeroSend(catchupSend)}.`,
-        });
-      }
-
-      const gated = await applyTopicGate(selectedIds);
-      const results =
-        gated.pass.length > 0
-          ? await analyzeSequentially(gated.pass, { concurrency, maxDurationMs: 46_000 })
-          : [];
-      const okIds = results.filter((item) => item.ok).map((item) => item.id);
-      const failedItems = results.filter((item) => !item.ok);
-      // Deliver both newly-analyzed articles AND any older unsent qualifying articles.
-      const autoSend = await maybeRunAutoSend();
+      const queue = await drainArticleQueue({ limit: batchSize, maxDurationMs: 46_000 });
       const summary = await getNewsStatusSummary();
-      const firstErr = failedItems[0];
-
+      const autoSend: AutoSendSummary = {
+        attempted: !queue.busy,
+        ...queue.send,
+        firstError: queue.blocked,
+      };
+      const analyzed = queue.analyzed.filter((item) => item.ok).length;
+      const failed = queue.analyzed.filter((item) => !item.ok).length;
       return Response.json({
         success: true,
         action,
-        analyzed: okIds.length,
-        failed: failedItems.length,
-        skippedOfftopic: gated.skipped.length,
+        analyzed,
+        failed,
+        skippedOfftopic: queue.skipped.length,
         autoSent: autoSend.sent,
         remainingReady: summary.byStatus.READY_FOR_AI ?? 0,
-        firstError: firstErr
-          ? `${firstErr.message ?? firstErr.code ?? "خطا"}${firstErr.detail ? ` (${firstErr.detail.slice(0, 160)})` : ""}`
-          : autoSend.firstError ?? null,
+        firstError: queue.blocked,
+        busy: queue.busy,
         summary,
-        message: `${okIds.length} مقاله تحلیل شد${gated.skipped.length > 0 ? `، ${gated.skipped.length} مورد غیرمرتبط رد شد` : ""}${explainZeroSend(autoSend)}.`,
+        message: queue.blocked
+          ? `صف به ترتیب ورود متوقف یا در انتظار است: ${queue.blocked}`
+          : `${analyzed} مقاله به ترتیب ورود تحلیل شد${queue.skipped.length ? `، ${queue.skipped.length} مورد غیرمرتبط کنار گذاشته شد` : ""}${explainZeroSend(autoSend)}.`,
       });
     }
 
@@ -284,7 +259,6 @@ export async function POST(request: Request) {
         if (
           check.verdict === "skip" &&
           (check.reason !== "not_in_selected_topics" ||
-            row.content === "" ||
             (row.content ?? "").trim().length >= 300)
         ) {
           bulkSkipIds.push(row.id);

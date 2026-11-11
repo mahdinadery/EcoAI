@@ -18,18 +18,11 @@ import { sendBulletinDelivery } from "@/lib/delivery";
 import { buildBulletinMessage, resolveBulletinSettings, MAX_BULLETIN_ITEMS, pickBulletinItems } from "@/lib/delivery/bulletin";
 import { diagnoseDbError } from "@/lib/admin/db-errors";
 import { expandTargets } from "@/lib/delivery/types";
-import {
-  analyzeSequentially,
-  applyTopicGate,
-  recoverStaleProcessing,
-  selectAnalysisBacklog,
-  sweepOfftopicBacklog,
-} from "@/lib/news/analysis-queue";
+import { drainArticleQueue, type ArticleQueueResult } from "@/lib/news/article-queue";
 import { deriveGapQueries, buildSearchUrl, MAX_GAP_QUERIES } from "@/lib/news/gap-search";
 import { fetchFeed, type NormalizedNews } from "@/lib/news/rss";
 import { ingestAllActiveSources, ingestSearchItems } from "@/lib/news/source-ingest";
 import { and, asc, desc, eq, gte, inArray, isNotNull, notExists, or, sql } from "drizzle-orm";
-import { runAutoDeliveryPass } from "./index";
 import { summarizeBulletinOutcomes, type BulletinDestinationOutcome } from "./bulletin-result";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 import { applyActiveSendFloors } from "./resolve-rule";
@@ -104,10 +97,7 @@ export async function selectSendCandidates(
         )),
       ),
     )
-    .orderBy(
-      sql`CASE WHEN ${news.shouldSend} = true OR (coalesce(${news.importanceScore}, 0) >= 50 AND coalesce(${news.relevanceScore}, 0) >= 50) THEN 0 ELSE 1 END ASC`,
-      desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`),
-    )
+    .orderBy(asc(news.createdAt), asc(news.id))
     .limit(candidateLimit);
 
   return rows.map((row) => row.id);
@@ -408,22 +398,14 @@ async function runGapSearchPhase(
     let analyzed = 0;
     let sent = 0;
     if (report.newArticleIds.length > 0) {
-      // The topic gate already ran at store time; analyze only the fresh gap
-      // items, then deliver with the SAME strict rule as the scheduled pass.
-      const results = await analyzeSequentially(report.newArticleIds.slice(0, GAP_SEARCH_MAX_ITEMS));
-      analyzed = results.filter((item) => item.ok).length;
-
-      if (deliver) {
-        const candidates = await selectSendCandidates(config);
-        const gapCandidates = candidates.filter((id) => report.newArticleIds.includes(id));
-        if (gapCandidates.length > 0) {
-          const delivery = await runAutoDeliveryPass({
-            newsIds: gapCandidates,
-            rule: scheduleToRule(config),
-          });
-          sent = delivery.sent;
-        }
-      }
+      // Search results join the same FIFO queue; they do not jump older papers.
+      const queue = await drainArticleQueue({
+        limit: GAP_SEARCH_MAX_ITEMS,
+        maxDurationMs: 20_000,
+        rule: { ...scheduleToRule(config), enabled: deliver },
+      });
+      analyzed = queue.analyzed.filter((item) => item.ok).length;
+      sent = queue.send.sent;
     }
 
     await markGapSearchRun();
@@ -475,6 +457,7 @@ async function executeScheduledPass(args: {
   let ingest: ScheduleIngestSummary | null = null;
   let analysis: ScheduleAnalysisSummary | null = null;
   let send: ScheduleSendSummary | null = null;
+  let queue: ArticleQueueResult | null = null;
 
   // Bulletin delivery must not wait for long feed fetches and AI jobs. Regular
   // slots (or the ingest cron) populate the analyzed backlog independently.
@@ -500,39 +483,23 @@ async function executeScheduledPass(args: {
       errors.push(`دریافت اخبار: ${detail}`);
     }
 
-    // 2) Analyze the pending backlog (oldest first, bounded per run).
+    // 2) The shared FIFO worker analyzes and sends in arrival order.
     try {
-      await recoverStaleProcessing();
-      const swept = await sweepOfftopicBacklog();
-
-      const selected = await selectAnalysisBacklog(args.config.maxAnalyze, [], { skipSweep: true });
-      const gated = await applyTopicGate(selected);
-      // Keep analysis bounded to ~34s with 4 concurrent workers so Step 3 (Bale
-      // delivery) always has ample headroom before serverless/proxy 60s timeouts.
-      const results = await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 34_000 });
-
-      const failedAnalyses = results.filter((item) => !item.ok);
-
+      queue = await drainArticleQueue({
+        limit: args.config.maxAnalyze,
+        maxDurationMs: 34_000,
+        rule: await applyActiveSendFloors(scheduleToRule(args.config)),
+      });
       analysis = {
-        selected: selected.length,
-        analyzed: results.filter((item) => item.ok).length,
-        failed: failedAnalyses.length,
-        skippedOfftopic: swept.swept + gated.skipped.length,
+        selected: queue.selected,
+        analyzed: queue.analyzed.filter((item) => item.ok).length,
+        failed: queue.analyzed.filter((item) => !item.ok).length,
+        skippedOfftopic: queue.skipped.length,
       };
-
-      // Without this, a missing AI key only shows up as "0 analyzed / N failed"
-      // and the dashboard cannot tell the operator why nothing was sent.
-      if (failedAnalyses.length > 0) {
-        const first = failedAnalyses[0];
-        const reason = first.message ?? first.code ?? "ناموفق";
-        const detail = first.detail ? ` (${first.detail.slice(0, 180)})` : "";
-        const rest = failedAnalyses.length > 1 ? ` [و ${failedAnalyses.length - 1} مورد دیگر]` : "";
-        errors.push(`تحلیل خبر: ${reason}${detail}${rest}`);
-      }
+      if (queue.blocked) errors.push(`صف مقالات: ${queue.blocked}`);
     } catch (error) {
-      const detail = errorText(error);
       analysis = { selected: 0, analyzed: 0, failed: 0, skippedOfftopic: 0 };
-      errors.push(`تحلیل اخبار: ${detail}`);
+      errors.push(`صف مقالات: ${errorText(error)}`);
     }
   }
 
@@ -577,55 +544,26 @@ async function executeScheduledPass(args: {
       errors.push(`بولتن: ${errorText(error)}`);
     }
   } else {
-    // Deliver all relevant & important analyzed papers that have not yet been sent.
-    try {
-      const candidates = await selectSendCandidates(args.config);
-      const effectiveRule = await applyActiveSendFloors(scheduleToRule(args.config));
-      const result = await runAutoDeliveryPass({
-        newsIds: candidates,
-        rule: effectiveRule,
-      });
-
-      send = {
-        enabled: result.enabled,
-        destination: result.destination,
-        considered: result.considered,
-        matched: result.matched,
-        sent: result.sent,
-        skippedDuplicates: result.skippedDuplicates,
-        skippedReview: result.skippedReview,
-        failed: result.failed,
-        // Keep a few rejected candidates with their reasons so the operator can
-        // see WHY a news item was not sent instead of guessing at the thresholds.
-        rejected: result.items
-          .filter((item) => item.outcome === "not_matched" || item.outcome === "skipped_review")
-          .slice(0, 5)
-          .map((item) => ({ title: item.title, reasons: item.reasons ?? [] })),
-      };
-
-      for (const item of result.items) {
-        if (item.outcome === "failed" && item.errors?.length) {
-          errors.push(`${item.title}: ${item.errors.join(" | ")}`);
-        }
-      }
-    } catch (error) {
-      const detail = errorText(error);
-      send = {
-        enabled: true,
-        destination: args.config.destination,
-        considered: 0,
-        matched: 0,
-        sent: 0,
-        skippedDuplicates: 0,
-        skippedReview: 0,
-        failed: 0,
-      };
-      errors.push(`ارسال خودکار: ${detail}`);
-    }
+    // Individual deliveries were processed by the same FIFO worker above.
+    const result = queue?.send;
+    send = {
+      enabled: result?.enabled ?? true,
+      destination: result?.destination || args.config.destination,
+      considered: result?.considered ?? 0,
+      matched: result?.matched ?? 0,
+      sent: result?.sent ?? 0,
+      skippedDuplicates: result?.skippedDuplicates ?? 0,
+      skippedReview: result?.skippedReview ?? 0,
+      failed: result?.failed ?? 0,
+      rejected: (result?.items ?? [])
+        .filter((item) => item.outcome === "not_matched" || item.outcome === "skipped_review")
+        .slice(0, 5)
+        .map((item) => ({ title: item.title, reasons: item.reasons ?? [] })),
+    };
 
     // 4) Coverage-gap search — only when this pass sent nothing and the feature
     //    is enabled (bulletin passes handle their own silence inside the phase).
-    if (args.config.gapSearchEnabled) {
+    if (args.config.gapSearchEnabled && !queue?.blocked) {
       try {
         gapSearch = await runGapSearchPhase(args.config, send.sent, true);
       } catch (error) {

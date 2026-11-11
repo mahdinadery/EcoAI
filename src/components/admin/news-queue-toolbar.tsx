@@ -143,7 +143,7 @@ export function NewsQueueToolbar({
     const startedMs = Date.now();
     setBanner({
       tone: "ok",
-      text: "پردازش پرسرعت موازی آغاز شد (دسته‌های ۱۵تایی با ۴ پردازشگر هم‌زمان + ارسال خودکار به بله)…",
+      text: "پردازش صف به ترتیب ورود آغاز شد؛ هر مقاله پس از تحلیل و در صورت واجد شرایط بودن، ارسال می‌شود…",
     });
 
     let totalAnalyzed = 0;
@@ -154,7 +154,7 @@ export function NewsQueueToolbar({
       for (let pass = 1; pass <= 60; pass += 1) {
         if (stopRef.current) break;
 
-        const data = await callQueueApi({ action: "analyze_batch", limit: 15, concurrency: 4 });
+        const data = await callQueueApi({ action: "analyze_batch", limit: 15 });
         if (!data.success) {
           setBanner({
             tone: "err",
@@ -218,7 +218,7 @@ export function NewsQueueToolbar({
             {displayedReadyToSend.toLocaleString("fa-IR")} آماده ارسال)
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted">
-            تمام مقالات مرتبط بدون محدودیت تاریخ حفظ می‌شوند، با ۴ پردازشگر موازی تحلیل می‌گردند و مقالات واجد شرایط مستقیماً به کانال بله ارسال می‌شوند (یا علت دقیق عدم ارسال نمایش داده می‌شود).
+            مقالات بدون محدودیت تاریخ، به ترتیب ورود تحلیل و در صورت واجد شرایط بودن ارسال می‌شوند. در صورت خطا، صف منتظر تلاش مجدد مقالهٔ قبلی می‌ماند.
             {!topicFilterActive
               ? " پیشنهاد می‌شود «فیلتر موضوعی اقتصاد AI» را فعال کنید تا فقط مقالات مرتبط تحلیل شوند."
               : ""}
@@ -247,16 +247,16 @@ export function NewsQueueToolbar({
             onClick={handleAutoDrain}
             type="button"
           >
-            {autoDraining ? "توقف پردازش پرسرعت" : "پردازش پرسرعت پیوستهٔ کل صف (موازی ۴×)"}
+            {autoDraining ? "توقف پردازش صف" : "پردازش پیوستهٔ صف به ترتیب ورود"}
           </button>
 
           <button
             className="rounded-xl border border-accent bg-accent-soft px-3.5 py-2 text-xs font-bold text-accent-ink transition-colors hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
             disabled={Boolean(busyAction) || autoDraining}
-            onClick={() => handleSingleAction("analyze_batch", { limit: 15, concurrency: 4 }, "تحلیل سریع ۱۵ مقاله")}
+            onClick={() => handleSingleAction("analyze_batch", { limit: 15 }, "تحلیل سریع ۱۵ مقاله")}
             type="button"
           >
-            {busyAction === "analyze_batch" ? "در حال تحلیل موازی ۱۵ مقاله…" : "تحلیل سریع ۱۵ مقالهٔ بعدی"}
+            {busyAction === "analyze_batch" ? "در حال بررسی مقالات به ترتیب ورود…" : "تحلیل حداکثر ۱۵ مقالهٔ بعدی"}
           </button>
 
           <button

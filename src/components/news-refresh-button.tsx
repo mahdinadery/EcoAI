@@ -80,7 +80,7 @@ export function NewsRefreshButton({ adminKey = "" }: { adminKey?: string }) {
         const queueRes = await fetch("/api/admin/news/queue", {
           method: "POST",
           headers: authHeaders,
-          body: JSON.stringify({ action: "analyze_batch", limit: 12, concurrency: 4 }),
+          body: JSON.stringify({ action: "analyze_batch", limit: 12 }),
         });
         if (queueRes.ok) {
           const queueData = (await queueRes.json()) as {

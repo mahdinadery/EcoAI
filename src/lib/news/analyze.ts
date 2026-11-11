@@ -142,8 +142,13 @@ export async function analyzeArticle(id: string, options: AnalyzeArticleOptions 
         detail: null,
       };
     }
-  } catch {
-    // Best effort; on a transient bookkeeping error the analysis will still proceed.
+  } catch (error) {
+    return {
+      ok: false,
+      code: "db_error",
+      message: "ثبت قفل تحلیل ناموفق بود؛ مقاله برای تلاش بعدی در صف می‌ماند.",
+      detail: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
+    };
   }
 
   let settled = false;

@@ -14,7 +14,7 @@ import { db } from "@/db";
 import { news } from "@/db/schema";
 import { readActiveOperationalSettings } from "@/lib/ai/config-service";
 import type { AiTopicFilterConfig } from "@/lib/ai/config-types";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { analyzeArticle } from "./analyze";
 import { fetchArticleBody } from "./article-extractor";
 import { DEFAULT_AI_CONCURRENCY, runBoundedConcurrentPool } from "./concurrent-pool";
@@ -143,16 +143,20 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
     const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
       fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
     );
+    // An unavailable publisher is not evidence that the article is off-topic.
+    const unavailable = probed.outcome.reason === "not_in_selected_topics" &&
+      ((probed.checkedFirstParagraph && !probed.firstParagraph) || row.content === "");
+    const verdict = unavailable ? "pass" : probed.outcome.verdict;
     if (probed.checkedFirstParagraph) {
       await persistProbedLead(
         row.id,
         row.description,
         probed.firstParagraph,
         probed.fetchedBody,
-        probed.outcome.verdict === "pass" ? undefined : "SKIPPED_OFFTOPIC",
+        verdict === "pass" ? undefined : "SKIPPED_OFFTOPIC",
       );
     }
-    return { id: row.id, checked: probed.checkedFirstParagraph, verdict: probed.outcome.verdict };
+    return { id: row.id, checked: probed.checkedFirstParagraph, verdict };
   });
 
   const pass: string[] = [];
@@ -174,7 +178,12 @@ export async function applyTopicGate(selectedIds: string[]): Promise<{ pass: str
       .where(inArray(news.id, uncheckedSkipIds));
   }
 
-  return { pass, skipped };
+  const passed = new Set(pass);
+  const rejected = new Set(skipped);
+  return {
+    pass: selectedIds.filter((id) => passed.has(id)),
+    skipped: selectedIds.filter((id) => rejected.has(id)),
+  };
 }
 
 /**
@@ -196,7 +205,7 @@ async function rescueTitleRejectedSkippedRows(filter: AiTopicFilterConfig | null
       .where(
         sql`${news.status} = 'SKIPPED_OFFTOPIC' AND ${news.analyzedAt} IS NULL AND ${news.content} IS NULL AND ${news.createdAt} >= now() - interval '72 hours'`,
       )
-      .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
+      .orderBy(asc(news.createdAt), asc(news.id))
       .limit(MAX_RESCUE_LEAD_PROBES);
 
     if (candidates.length === 0) return 0;
@@ -206,7 +215,7 @@ async function rescueTitleRejectedSkippedRows(filter: AiTopicFilterConfig | null
       const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
         fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
       );
-      if (probed.outcome.verdict === "pass") {
+      if (probed.outcome.verdict === "pass" || (probed.checkedFirstParagraph && !probed.firstParagraph)) {
         rescued += 1;
         await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody, "READY_FOR_AI");
       } else if (probed.checkedFirstParagraph) {
@@ -251,7 +260,7 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number; rescued?:
       .where(
         sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('READY_FOR_AI', 'FAILED')`,
       )
-      .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`))
+      .orderBy(asc(news.createdAt), asc(news.id))
       .limit(SWEEP_BATCH_LIMIT);
 
     if (pendingRows.length === 0) return { swept: 0, rescued };
@@ -269,7 +278,7 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number; rescued?:
         needsLeadProbe.length < MAX_SWEEP_LEAD_PROBES
       ) {
         needsLeadProbe.push(row);
-      } else if (initial.reason !== "not_in_selected_topics" || row.content === "" || (row.content ?? "").trim().length >= 300) {
+      } else if (initial.reason !== "not_in_selected_topics" || (row.content ?? "").trim().length >= 300) {
         immediateSkipIds.push(row.id);
       }
       // Items beyond `MAX_SWEEP_LEAD_PROBES` remain `READY_FOR_AI` until a
@@ -283,7 +292,7 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number; rescued?:
         const probed = await evaluateWithFirstParagraphFallback(row, filter, (url) =>
           fetchArticleBody(url, QUEUE_LEAD_TIMEOUT_MS),
         );
-        if (probed.outcome.verdict === "pass") {
+        if (probed.outcome.verdict === "pass" || (probed.checkedFirstParagraph && !probed.firstParagraph)) {
           if (probed.checkedFirstParagraph) {
             await persistProbedLead(row.id, row.description, probed.firstParagraph, probed.fetchedBody);
           }
@@ -309,9 +318,8 @@ export async function sweepOfftopicBacklog(): Promise<{ swept: number; rescued?:
 }
 
 /**
- * Newest READY_FOR_AI items first (with dateless RSS items demoted slightly so
- * dated articles from timely AI-economics feeds are never starved), followed by
- * previously FAILED unanalyzed items.
+ * Oldest received items first, including failures awaiting retry. Publication
+ * dates are not arrival order and must not bury older received papers.
  */
 export async function selectAnalysisBacklog(
   limit: number,
@@ -338,10 +346,7 @@ export async function selectAnalysisBacklog(
           : sql`TRUE`,
       ),
     )
-    .orderBy(
-      sql`CASE WHEN ${news.status} = 'READY_FOR_AI' THEN 0 ELSE 1 END ASC`,
-      sql`coalesce(${news.publishedAt}, ${news.createdAt}) DESC`,
-    )
+    .orderBy(asc(news.createdAt), asc(news.id))
     .limit(limit);
 
   return rows.map((row) => row.id);

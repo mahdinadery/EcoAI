@@ -271,6 +271,9 @@ function buildValues(candidate: Candidate, source: NewsSourceRow | null, default
     normalizedContent: normalizeContent(item.content, item.description),
     similarityKey: similarityKeyOf(item.title) || null,
     fetchedAt: new Date(),
+    // now() is fixed for a whole multi-row INSERT; evaluate per row so newly
+    // received papers in the same feed batch retain a stable arrival order.
+    createdAt: sql`clock_timestamp()`,
   };
 }
 

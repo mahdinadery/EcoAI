@@ -1,11 +1,5 @@
 import { checkAdminAccess } from "@/lib/admin/access";
-import { maybeRunAutoSend } from "@/lib/agent/auto-hook";
-import {
-  analyzeSequentially,
-  applyTopicGate,
-  recoverStaleProcessing,
-  selectAnalysisBacklog,
-} from "@/lib/news/analysis-queue";
+import { drainArticleQueue } from "@/lib/news/article-queue";
 import { ingestNews } from "@/lib/news/ingest";
 
 export const dynamic = "force-dynamic";
@@ -58,10 +52,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Recover articles that were left in AI_PROCESSING by an interrupted
-    // request or server restart.
-    await recoverStaleProcessing();
-
     if (ingestOnly) {
       return Response.json({
         success: true,
@@ -80,34 +70,8 @@ export async function POST(request: Request) {
       });
     }
 
-    // Prefer articles fetched in this run, then continue with older backlog.
-    const selectedIds: string[] = [];
-
-    for (const id of result.newArticleIds) {
-      if (selectedIds.length >= MAX_AI_ITEMS_PER_RUN) break;
-      selectedIds.push(id);
-    }
-
-    if (selectedIds.length < MAX_AI_ITEMS_PER_RUN) {
-      const remaining = MAX_AI_ITEMS_PER_RUN - selectedIds.length;
-      const backlog = await selectAnalysisBacklog(remaining, selectedIds);
-      selectedIds.push(...backlog);
-    }
-
-    // Topic relevance gate BEFORE AI — off-topic items never reach the model.
-    const gated = await applyTopicGate(selectedIds);
-    const aiQueue = gated.pass;
-
-    // Keep AI duration bounded to 26s so RSS ingest + AI + Bale delivery stays
-    // safely inside Render / reverse-proxy 60s HTTP windows.
-    const analysisResults = await analyzeSequentially(aiQueue, {
-      concurrency: 4,
-      maxDurationMs: 26_000,
-    });
-
-    // Deliver both newly-analyzed papers and any previously-analyzed qualifying
-    // papers still waiting to go out to Bale.
-    const autoSend = await maybeRunAutoSend();
+    // The shared queue drains older received articles before new arrivals.
+    const queue = await drainArticleQueue({ limit: MAX_AI_ITEMS_PER_RUN, maxDurationMs: 26_000 });
 
     return Response.json({
       success: true,
@@ -115,13 +79,15 @@ export async function POST(request: Request) {
       fetched: result.fetched,
       stored: result.stored,
       newArticleIds: result.newArticleIds,
-      queuedForAnalysis: aiQueue,
-      topicSkipped: gated.skipped,
-      analyzed: analysisResults,
+      queuedForAnalysis: queue.analyzed.map((item) => item.id),
+      topicSkipped: queue.skipped,
+      analyzed: queue.analyzed,
+      queueBusy: queue.busy,
+      queueBlocked: queue.blocked,
       duplicates: result.duplicates,
       skipped: result.skipped,
       filtered: result.filtered,
-      autoSend,
+      autoSend: queue.send,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

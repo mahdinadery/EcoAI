@@ -28,8 +28,9 @@ import {
 import { deriveGapQueries, buildSearchUrl, MAX_GAP_QUERIES } from "@/lib/news/gap-search";
 import { fetchFeed, type NormalizedNews } from "@/lib/news/rss";
 import { ingestAllActiveSources, ingestSearchItems } from "@/lib/news/source-ingest";
-import { and, asc, desc, eq, gte, inArray, isNotNull, notExists, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, notExists, or, sql } from "drizzle-orm";
 import { runAutoDeliveryPass } from "./index";
+import { summarizeBulletinOutcomes, type BulletinDestinationOutcome } from "./bulletin-result";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 import { applyActiveSendFloors } from "./resolve-rule";
 import type {
@@ -92,18 +93,15 @@ export async function selectSendCandidates(
         isNotNull(news.analyzedAt),
         sql`coalesce(${news.summary}, '') <> ''`,
         sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(deliveries)
-            .where(
-              and(
-                eq(deliveries.newsId, news.id),
-                eq(deliveries.status, "sent"),
-                inArray(deliveries.destination, targets),
-              ),
-            ),
-        ),
+        or(...targets.map((destination) =>
+          notExists(
+            db.select({ one: sql`1` }).from(deliveries).where(and(
+              eq(deliveries.newsId, news.id),
+              eq(deliveries.status, "sent"),
+              eq(deliveries.destination, destination),
+            )),
+          ),
+        )),
       ),
     )
     .orderBy(
@@ -264,14 +262,20 @@ async function sendBulletin(
     target: config.destination,
     trigger: options.trigger === "schedule" ? "auto" : "manual",
     recordRows: options.recordRows,
+    diagnosticNewsId: items[0]?.id,
   });
 
+  const destinations = result.results.map((entry) => ({
+    destination: entry.destination,
+    sent: entry.ok,
+    reason: entry.ok ? null : "delivery_failed",
+    ...(entry.errorMessage ? { detail: entry.errorMessage } : {}),
+  }));
   if (!result.ok) {
-    return { attempted: true, sent: false, itemCount: items.length, reason: "delivery_failed" };
+    return { attempted: true, sent: false, itemCount: items.length, reason: "delivery_failed", destinations };
   }
 
-  await markBulletinSent();
-  return { attempted: true, sent: true, itemCount: items.length, reason: null };
+  return { attempted: true, sent: true, itemCount: items.length, reason: null, destinations };
 }
 
 /**
@@ -310,16 +314,8 @@ async function runBulletinPhase(
   }
 
   if (items.length === 0) {
-    // Recap fallback: the qualifying items may already have gone out as
-    // singles (manual sends, entity bulletins, a mode switch). A digest of
-    // what was sent is always better than a silently skipped slot.
-    const recaps = await selectRecapItems(config);
-    if (recaps.length > 0) {
-      return {
-        summary: await sendBulletin(config, recaps, { recordRows: false, trigger }),
-        gapSearch,
-      };
-    }
+    // In bulletin-only mode do not replay yesterday's already-sent bulletin
+    // as if it contained new articles. Recaps belong to publishMode 'both'.
     return {
       summary: { attempted: true, sent: false, itemCount: 0, reason: "no_qualifying_items" },
       gapSearch,
@@ -480,61 +476,64 @@ async function executeScheduledPass(args: {
   let analysis: ScheduleAnalysisSummary | null = null;
   let send: ScheduleSendSummary | null = null;
 
-  // 1) Fetch every active source (scheduled runs ignore per-source intervals:
-  //    the digest must contain everything available right now).
-  try {
-    const result = await ingestAllActiveSources();
-    if (result.ok) {
-      ingest = {
-        attempted: true,
-        sources: result.bySource?.length ?? 1,
-        created: result.stored,
-        duplicates: result.duplicates,
-        failed: 0,
+  // Bulletin delivery must not wait for long feed fetches and AI jobs. Regular
+  // slots (or the ingest cron) populate the analyzed backlog independently.
+  if (args.passKind !== "bulletin") {
+    // 1) Fetch every active source (scheduled runs ignore per-source intervals).
+    try {
+      const result = await ingestAllActiveSources();
+      if (result.ok) {
+        ingest = {
+          attempted: true,
+          sources: result.bySource?.length ?? 1,
+          created: result.stored,
+          duplicates: result.duplicates,
+          failed: 0,
+        };
+      } else {
+        ingest = { attempted: true, sources: 0, created: 0, duplicates: 0, failed: 1, detail: result.message };
+        errors.push(`دریافت اخبار: ${result.message}`);
+      }
+    } catch (error) {
+      const detail = errorText(error);
+      ingest = { attempted: true, sources: 0, created: 0, duplicates: 0, failed: 1, detail };
+      errors.push(`دریافت اخبار: ${detail}`);
+    }
+
+    // 2) Analyze the pending backlog (oldest first, bounded per run).
+    try {
+      await recoverStaleProcessing();
+      const swept = await sweepOfftopicBacklog();
+
+      const selected = await selectAnalysisBacklog(args.config.maxAnalyze, [], { skipSweep: true });
+      const gated = await applyTopicGate(selected);
+      // Keep analysis bounded to ~34s with 4 concurrent workers so Step 3 (Bale
+      // delivery) always has ample headroom before serverless/proxy 60s timeouts.
+      const results = await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 34_000 });
+
+      const failedAnalyses = results.filter((item) => !item.ok);
+
+      analysis = {
+        selected: selected.length,
+        analyzed: results.filter((item) => item.ok).length,
+        failed: failedAnalyses.length,
+        skippedOfftopic: swept.swept + gated.skipped.length,
       };
-    } else {
-      ingest = { attempted: true, sources: 0, created: 0, duplicates: 0, failed: 1, detail: result.message };
-      errors.push(`دریافت اخبار: ${result.message}`);
+
+      // Without this, a missing AI key only shows up as "0 analyzed / N failed"
+      // and the dashboard cannot tell the operator why nothing was sent.
+      if (failedAnalyses.length > 0) {
+        const first = failedAnalyses[0];
+        const reason = first.message ?? first.code ?? "ناموفق";
+        const detail = first.detail ? ` (${first.detail.slice(0, 180)})` : "";
+        const rest = failedAnalyses.length > 1 ? ` [و ${failedAnalyses.length - 1} مورد دیگر]` : "";
+        errors.push(`تحلیل خبر: ${reason}${detail}${rest}`);
+      }
+    } catch (error) {
+      const detail = errorText(error);
+      analysis = { selected: 0, analyzed: 0, failed: 0, skippedOfftopic: 0 };
+      errors.push(`تحلیل اخبار: ${detail}`);
     }
-  } catch (error) {
-    const detail = errorText(error);
-    ingest = { attempted: true, sources: 0, created: 0, duplicates: 0, failed: 1, detail };
-    errors.push(`دریافت اخبار: ${detail}`);
-  }
-
-  // 2) Analyze the pending backlog (oldest first, bounded per run).
-  try {
-    await recoverStaleProcessing();
-    const swept = await sweepOfftopicBacklog();
-
-    const selected = await selectAnalysisBacklog(args.config.maxAnalyze, [], { skipSweep: true });
-    const gated = await applyTopicGate(selected);
-    // Keep analysis bounded to ~34s with 4 concurrent workers so Step 3 (Bale
-    // delivery) always has ample headroom before serverless/proxy 60s timeouts.
-    const results = await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 34_000 });
-
-    const failedAnalyses = results.filter((item) => !item.ok);
-
-    analysis = {
-      selected: selected.length,
-      analyzed: results.filter((item) => item.ok).length,
-      failed: failedAnalyses.length,
-      skippedOfftopic: swept.swept + gated.skipped.length,
-    };
-
-    // Without this, a missing AI key only shows up as "0 analyzed / N failed"
-    // and the dashboard cannot tell the operator why nothing was sent.
-    if (failedAnalyses.length > 0) {
-      const first = failedAnalyses[0];
-      const reason = first.message ?? first.code ?? "ناموفق";
-      const detail = first.detail ? ` (${first.detail.slice(0, 180)})` : "";
-      const rest = failedAnalyses.length > 1 ? ` [و ${failedAnalyses.length - 1} مورد دیگر]` : "";
-      errors.push(`تحلیل خبر: ${reason}${detail}${rest}`);
-    }
-  } catch (error) {
-    const detail = errorText(error);
-    analysis = { selected: 0, analyzed: 0, failed: 0, skippedOfftopic: 0 };
-    errors.push(`تحلیل اخبار: ${detail}`);
   }
 
   // 3) Delivery — per-item messages, or held for the digest, depending on the
@@ -545,9 +544,34 @@ async function executeScheduledPass(args: {
   if (args.passKind === "bulletin") {
     // Digest pass: pack qualifying papers (or recap recently sent ones) into one digest.
     try {
-      const outcome = await runBulletinPhase(args.config, args.trigger);
-      bulletin = outcome.summary;
-      gapSearch = outcome.gapSearch ?? null;
+      // Select independently per destination. A local success must not make
+      // an article disappear from Bale's queue (or cause local resends while
+      // retrying Bale on a later run).
+      const targets = expandTargets(args.config.destination).sort((a, b) => (a === "bale" ? -1 : b === "bale" ? 1 : 0));
+      const outcomes: Array<BulletinDestinationOutcome & { gapSearch?: ScheduleGapSummary | null }> = [];
+      for (const destination of targets) {
+        const outcome = await runBulletinPhase(
+          { ...args.config, destination, gapSearchEnabled: destination === targets[0] && args.config.gapSearchEnabled },
+          args.trigger,
+        );
+        outcomes.push({ destination, ...outcome });
+        if (outcome.gapSearch) gapSearch = outcome.gapSearch;
+        if (outcome.summary.reason === "delivery_failed") {
+          // Avoid producing a misleading local success (or resending recaps)
+          // when Bale failed. A timeout can be ambiguous, so do not retry here.
+          for (const remaining of targets.slice(outcomes.length)) {
+            outcomes.push({ destination: remaining, summary: { attempted: false, sent: false, itemCount: 0, reason: "not_attempted" } });
+          }
+          break;
+        }
+      }
+      bulletin = summarizeBulletinOutcomes(outcomes);
+      for (const destination of bulletin.destinations ?? []) {
+        if (destination.reason === "delivery_failed") {
+          errors.push(`بولتن ${destination.destination}: ${destination.detail ?? "ارسال ناموفق بود"}`);
+        }
+      }
+      if (bulletin.sent) await markBulletinSent();
     } catch (error) {
       bulletin = { attempted: true, sent: false, itemCount: 0, reason: "delivery_failed" };
       errors.push(`بولتن: ${errorText(error)}`);

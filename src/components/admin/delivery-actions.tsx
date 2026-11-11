@@ -17,8 +17,8 @@ type Props = {
  *
  * Nothing here runs automatically: approve/reject/edit are DB-only, and the
  * two send buttons are the only paths that call a provider — each requires an
- * explicit click. "Send to Bale" is offered only for a Bale candidate, so the
- * Local rehearsal path can never publish to the production channel by accident.
+ * explicit click. Forwarding a previously local-only message also requires
+ * explicit confirmation and is checked against the Bale delivery ledger.
  */
 export function DeliveryActions({ deliveryId, status, destination, message, canRetry, adminKey }: Props) {
   const router = useRouter();
@@ -167,6 +167,24 @@ export function DeliveryActions({ deliveryId, status, destination, message, canR
           >
             {busy === "force" ? "..." : "ارسال مجدد (اجباری — در تاریخچه ثبت می‌شود)"}
           </button>
+        </div>
+      ) : null}
+
+      {status === "sent" && destination === "local" && message.trim() ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="rounded-xl border border-line px-4 py-2 text-sm font-bold text-ink disabled:opacity-50"
+            disabled={busy !== null}
+            onClick={() => {
+              if (window.confirm("این متن عیناً به بله ارسال می‌شود. ابتدا کانال را برای جلوگیری از تکرار بررسی کنید. ادامه می‌دهید؟")) {
+                void action("forward", `/api/admin/deliveries/${deliveryId}/forward-bale`);
+              }
+            }}
+          >
+            {busy === "forward" ? "در حال ارسال..." : "ارسال پیام محلی به بله"}
+          </button>
+          <span className="text-xs text-faint">صندوق محلی به معنی ارسال به بله نیست.</span>
         </div>
       ) : null}
 

@@ -1,4 +1,5 @@
 import { checkAdminAccess } from "@/lib/admin/access";
+import { shouldContinueAfterBulletin } from "@/lib/agent/bulletin-tick";
 import {
   computeDueBulletinSlot,
   computeDueSlot,
@@ -111,16 +112,19 @@ export async function POST(request: Request) {
         passKind: "bulletin",
       });
       await recordRunResult(record.id, bulletinSummary);
-      if (["nothing_new", "no_qualifying_items"].includes(bulletinSummary.bulletin?.reason ?? "")) {
-        await releaseEmptyBulletinSlot(record.id, bulletinDue.slotKey);
+      const empty = ["nothing_new", "no_qualifying_items"].includes(bulletinSummary.bulletin?.reason ?? "");
+      if (empty) await releaseEmptyBulletinSlot(record.id, bulletinDue.slotKey);
+      // An empty bulletin is retryable, but must not consume every tick and
+      // starve the regular ingest/analysis slot that can fill the queue.
+      if (!shouldContinueAfterBulletin(bulletinSummary.bulletin?.reason, due.due)) {
+        return Response.json({
+          success: true,
+          ran: true,
+          passKind: "bulletin",
+          slotKey: bulletinDue.slotKey,
+          summary: bulletinSummary,
+        });
       }
-      return Response.json({
-        success: true,
-        ran: true,
-        passKind: "bulletin",
-        slotKey: bulletinDue.slotKey,
-        summary: bulletinSummary,
-      });
     }
   }
 

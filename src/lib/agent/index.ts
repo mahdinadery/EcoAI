@@ -15,7 +15,7 @@ import { db } from "@/db";
 import { deliveries, news, type NewsRow } from "@/db/schema";
 import { sendNewsDelivery } from "@/lib/delivery";
 import { expandTargets } from "@/lib/delivery/types";
-import { and, desc, eq, inArray, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, or, sql } from "drizzle-orm";
 import { applyActiveSendFloors, resolveAutoSendRule } from "./resolve-rule";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 
@@ -119,7 +119,7 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
       and(
         sql`${news.analyzedAt} IS NOT NULL AND coalesce(${news.summary}, '') <> ''`,
         sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
-        ...targets.map((dest) =>
+        or(...targets.map((dest) =>
           notExists(
             db
               .select({ one: sql`1` })
@@ -132,7 +132,7 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
                 ),
               ),
           ),
-        ),
+        )),
       ),
     )
     .orderBy(

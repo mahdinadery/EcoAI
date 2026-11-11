@@ -1,8 +1,8 @@
 name: Scheduled news ingest
 
 # External cron for Render free tier (wakes the service and fetches due RSS/Atom
-# feeds every 15 minutes without analyzing or sending outside scheduled slots).
-# Analysis + automatic Bale delivery run in `.github/workflows/scheduled-agent.yml`.
+# feeds and drains the ordered article queue every 5 minutes. Actual GitHub
+# Actions schedule timing is best-effort; the queue persists between runs.
 #
 # Setup (once): GitHub -> Settings -> Secrets and variables -> Actions:
 #   APP_URL          e.g. https://ecoai.onrender.com (trailing slash optional)
@@ -10,8 +10,12 @@ name: Scheduled news ingest
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: scheduled-news-ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:

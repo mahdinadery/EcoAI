@@ -42,10 +42,11 @@ function disabled(destination = "", enabled = true): AutoSendSummary {
   };
 }
 
-export async function maybeRunAutoSend(newsIds?: string[]): Promise<AutoSendSummary> {
+export async function maybeRunAutoSend(newsIds?: string[], options: { queueLockHeld?: boolean } = {}): Promise<AutoSendSummary> {
   try {
     const rule = await resolveAutoSendRule();
-    const result = await runAutoDeliveryPass({ newsIds, rule });
+    const result = await runAutoDeliveryPass({ newsIds, rule, queueLockHeld: options.queueLockHeld });
+    if (result.busy) return { ...disabled(rule.destination, rule.enabled), firstError: "صف در حال پردازش است؛ نوبت بعد دوباره تلاش می‌شود." };
     const firstFailed = result.items.find((item) => item.outcome === "failed" && item.errors?.length);
     const firstRejected = result.items.find(
       (item) => (item.outcome === "not_matched" || item.outcome === "skipped_review") && item.reasons?.length,

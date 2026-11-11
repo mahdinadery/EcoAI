@@ -44,9 +44,9 @@ export async function POST(
     const result = await analyzeArticle(id, { force });
 
     if (result.ok) {
-      // Auto-delivery: the freshly analyzed article is evaluated against the rule.
-      // Runs after the analysis is safely persisted and never fails this response.
-      const autoSend = await maybeRunAutoSend([id]);
+      // Auto-delivery follows the shared arrival-order queue rather than
+      // allowing this manually analyzed article to jump older unsent papers.
+      const autoSend = await maybeRunAutoSend();
 
       // Milestone 8: when the AI recommends sending, open a publishing CANDIDATE
       // for human approval. This never sends anything — and any failure here is

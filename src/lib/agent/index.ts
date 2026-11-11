@@ -15,7 +15,8 @@ import { db } from "@/db";
 import { deliveries, news, type NewsRow } from "@/db/schema";
 import { sendNewsDelivery } from "@/lib/delivery";
 import { expandTargets } from "@/lib/delivery/types";
-import { and, desc, eq, inArray, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, notExists, or, sql } from "drizzle-orm";
+import { withArticleQueueLock } from "@/lib/news/queue-lock";
 import { applyActiveSendFloors, resolveAutoSendRule } from "./resolve-rule";
 import { evaluateArticle, type AutoSendRule } from "./rules";
 
@@ -37,6 +38,8 @@ export type AutoPassResult = {
   /** Articles deferred because an open manual publishing candidate exists. */
   skippedReview: number;
   failed: number;
+  /** Another automatic queue pass owns the database lock. */
+  busy?: boolean;
   items: AutoSendItem[];
 };
 
@@ -99,10 +102,8 @@ async function findPendingReviewIds(newsIds: string[], rule: AutoSendRule): Prom
   return pending;
 }
 
-async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<NewsRow[]> {
-  if (newsIds && newsIds.length > 0) {
-    return db.select().from(news).where(inArray(news.id, newsIds)).limit(Math.max(rule.maxItemsPerPass, 25));
-  }
+async function loadCandidates(rule: AutoSendRule, newsIds?: string[], force = false): Promise<NewsRow[]> {
+  if (newsIds && newsIds.length === 0) return [];
 
   const targets = expandTargets(rule.destination);
   const batchCap = Math.max(rule.maxItemsPerPass, 25);
@@ -117,8 +118,32 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
     .from(news)
     .where(
       and(
+        newsIds ? inArray(news.id, newsIds) : sql`true`,
         sql`${news.analyzedAt} IS NOT NULL AND coalesce(${news.summary}, '') <> ''`,
         sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
+        // Do not publish a later article while an earlier one is still awaiting
+        // analysis or retry. publishedAt is not an arrival timestamp.
+        sql`NOT EXISTS (SELECT 1 FROM news AS older WHERE older.analyzed_at IS NULL AND older.status IN ('FETCHED', 'READY_FOR_AI', 'AI_PROCESSING', 'FAILED') AND (older.created_at, older.id) < (${news.createdAt}, ${news.id}))`,
+        // Avoid head-of-line starvation by rows that cannot match the rule.
+        force ? sql`true` : and(
+          sql`${news.relevanceGrade} IS DISTINCT FROM 'rejected'`,
+          or(
+            and(
+              sql`coalesce(${news.importanceScore}, 0) >= ${rule.minImportance}`,
+              sql`coalesce(${news.relevanceScore}, 0) >= ${rule.minRelevance}`,
+              sql`coalesce(${news.noveltyScore}, 0) >= ${rule.minNovelty}`,
+              rule.requireAiRecommendation ? eq(news.shouldSend, true) : sql`true`,
+              rule.categories ? sql`btrim(coalesce(${news.category}, '')) IN (${sql.join(rule.categories.map((category) => sql`${category}`), sql`, `)})` : sql`true`,
+            ),
+            !rule.categories ? and(
+              eq(news.shouldSend, true),
+              sql`coalesce(${news.importanceScore}, 0) >= 50`,
+              sql`coalesce(${news.relevanceScore}, 0) >= 50`,
+              sql`coalesce(${news.noveltyScore}, 0) >= ${rule.minNovelty}`,
+            ) : undefined,
+          ),
+        ),
+        sql`NOT EXISTS (SELECT 1 FROM deliveries AS review WHERE review.news_id = ${news.id} AND review.destination IN (${sql.join(targets.map((target) => sql`${target}`), sql`, `)}) AND review.status IN ('pending_approval', 'approved') AND review.created_at >= now() - interval '12 hours')`,
         or(...targets.map((dest) =>
           notExists(
             db
@@ -135,10 +160,7 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
         )),
       ),
     )
-    .orderBy(
-      sql`CASE WHEN (${news.shouldSend} = true AND coalesce(${news.importanceScore}, 0) >= 50 AND coalesce(${news.relevanceScore}, 0) >= 50) OR (coalesce(${news.importanceScore}, 0) >= ${rule.minImportance} AND coalesce(${news.relevanceScore}, 0) >= ${rule.minRelevance}) THEN 0 ELSE 1 END ASC`,
-      desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`),
-    )
+    .orderBy(asc(news.createdAt), asc(news.id))
     .limit(batchCap);
 }
 
@@ -147,8 +169,12 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[]): Promise<N
  * reported in the result instead of bubbling up to the caller.
  */
 export async function runAutoDeliveryPass(
-  options: { newsIds?: string[]; force?: boolean; rule?: AutoSendRule } = {},
+  options: { newsIds?: string[]; force?: boolean; rule?: AutoSendRule; queueLockHeld?: boolean } = {},
 ): Promise<AutoPassResult> {
+  if (!options.queueLockHeld) {
+    const locked = await withArticleQueueLock(() => runAutoDeliveryPass({ ...options, queueLockHeld: true }));
+    return locked.acquired ? locked.value : { ...NOT_MATCHED, busy: true };
+  }
   // The scheduled publisher passes its own rule so its configured time slots,
   // destination and thresholds stay independent from the "after analysis"
   // auto-send policy, while still honoring active `decisionRules` floors.
@@ -164,7 +190,7 @@ export async function runAutoDeliveryPass(
 
   let candidates: NewsRow[];
   try {
-    candidates = await loadCandidates(rule, options.newsIds);
+    candidates = await loadCandidates(rule, options.newsIds, options.force);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     console.error("[agent] could not load candidates:", detail.slice(0, 160));
@@ -249,7 +275,7 @@ export async function runAutoDeliveryPass(
         outcome: "failed",
         errors: [sendResult.message],
       });
-      continue;
+      break;
     }
 
     const statuses = sendResult.results.map((entry) => entry.status);
@@ -270,6 +296,8 @@ export async function runAutoDeliveryPass(
       outcome: sentCount > 0 ? (failedCount > 0 ? "partially_sent" : "sent") : failedCount > 0 ? "failed" : "already_sent",
       errors: errors.length > 0 ? errors : undefined,
     });
+    // Preserve publication order if an earlier destination failed.
+    if (failedCount > 0) break;
   }
 
   return result;

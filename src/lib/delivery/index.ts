@@ -95,6 +95,19 @@ async function deliverToOne(
     return { destination, status: "already_sent", ok: false, errorMessage: ALREADY_SENT_MESSAGE };
   }
 
+  if (trigger === "auto" && destination === "bale") {
+    const [last] = await db.select({ status: deliveries.status, error: deliveries.errorMessage })
+      .from(deliveries).where(and(eq(deliveries.newsId, article.id), eq(deliveries.destination, destination)))
+      .orderBy(desc(deliveries.createdAt), desc(deliveries.id)).limit(1);
+    // A timeout or malformed response can occur after Bale accepted the
+    // message. Re-sending automatically could duplicate it; require review.
+    // A plain "could not reach" network error means the request never left,
+    // so it stays retryable.
+    if (last?.status === "failed" && /timed out|timeout|not valid json/i.test(last.error ?? "")) {
+      return { destination, status: "failed", ok: false, errorMessage: "نتیجهٔ ارسال قبلی نامشخص است؛ پیش از تلاش مجدد کانال بله را بررسی کنید." };
+    }
+  }
+
   let outcome: ProviderOutcome;
   try {
     outcome = await PROVIDERS[destination](message);

@@ -1,11 +1,5 @@
 import { checkAdminAccess } from "@/lib/admin/access";
-import { maybeRunAutoSend } from "@/lib/agent/auto-hook";
-import {
-  analyzeSequentially,
-  applyTopicGate,
-  recoverStaleProcessing,
-  selectAnalysisBacklog,
-} from "@/lib/news/analysis-queue";
+import { drainArticleQueue } from "@/lib/news/article-queue";
 import { runDueSources } from "@/lib/news/source-ingest";
 
 export const dynamic = "force-dynamic";
@@ -17,9 +11,8 @@ const MAX_DRAIN_PER_DUE_TICK = 12;
  * POST /api/admin/news-sources/run-due
  *
  * Fetches every ACTIVE rss source whose `fetchIntervalMinutes` has elapsed,
- * then drains a bounded parallel batch (`MAX_DRAIN_PER_DUE_TICK = 12`, max 46s,
- * 4 concurrent workers) of pending `READY_FOR_AI` papers so the 15-minute
- * `scheduled-ingest` cron drains ~48 papers/hour automatically.
+ * then drains a bounded FIFO batch of articles, stopping on a failed older
+ * article so newer articles do not overtake it.
  */
 export async function POST(request: Request) {
   const access = checkAdminAccess(request);
@@ -30,26 +23,18 @@ export async function POST(request: Request) {
   try {
     const result = await runDueSources();
 
-    await recoverStaleProcessing();
-    const backlogIds = await selectAnalysisBacklog(MAX_DRAIN_PER_DUE_TICK);
-    const gated = await applyTopicGate(backlogIds);
-    const analyzedResults =
-      gated.pass.length > 0
-        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 28_000 })
-        : [];
-    const analyzedIds = analyzedResults.filter((item) => item.ok).map((item) => item.id);
-    // Run auto-send over all unsent qualifying articles (both newly analyzed in
-    // this tick and previously analyzed `READY_TO_SEND` backlog).
-    const autoSend = await maybeRunAutoSend();
+    const queue = await drainArticleQueue({ limit: MAX_DRAIN_PER_DUE_TICK, maxDurationMs: 28_000 });
 
     return Response.json({
       success: true,
       ...result,
       drained: {
-        selected: backlogIds.length,
-        analyzed: analyzedIds.length,
-        topicSkipped: gated.skipped.length,
-        autoSent: autoSend?.sent ?? 0,
+        selected: queue.selected,
+        analyzed: queue.analyzed.filter((item) => item.ok).length,
+        topicSkipped: queue.skipped.length,
+        autoSent: queue.send.sent,
+        busy: queue.busy,
+        blocked: queue.blocked,
       },
     });
   } catch (error) {

@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     const gated = await applyTopicGate(backlogIds);
     const analyzedResults =
       gated.pass.length > 0
-        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 42_000 })
+        ? await analyzeSequentially(gated.pass, { concurrency: 4, maxDurationMs: 28_000 })
         : [];
     const analyzedIds = analyzedResults.filter((item) => item.ok).map((item) => item.id);
     // Run auto-send over all unsent qualifying articles (both newly analyzed in

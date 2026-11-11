@@ -106,8 +106,9 @@ function field(block: string, name: string): string | undefined {
 }
 
 function attribute(block: string, tag: string, attr: string): string | undefined {
-  const pattern = new RegExp(`<${tag}\\b[^>]*\\b${attr}\\s*=\\s*"([^"]*)"`, "i");
-  const value = pattern.exec(block)?.[1];
+  const pattern = new RegExp(`<${tag}\\b[^>]*\\b${attr}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
+  const match = pattern.exec(block);
+  const value = match?.[1] ?? match?.[2];
   return value ? value.replace(/&amp;/g, "&") : undefined;
 }
 
@@ -132,7 +133,19 @@ function atomAlternateLink(block: string): string | undefined {
   const alternate =
     /<link\b[^>]*\brel\s*=\s*["']alternate["'][^>]*\bhref\s*=\s*["']([^"']+)["']/i.exec(block)?.[1] ??
     /<link\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*\brel\s*=\s*["']alternate["']/i.exec(block)?.[1];
-  return alternate ? alternate.replace(/&amp;/g, "&") : undefined;
+  if (alternate) return alternate.replace(/&amp;/g, "&");
+
+  // Atom feeds often omit `rel="alternate"` on the primary entry link while
+  // also carrying `<link rel="enclosure" .../>` or `<link rel="self" .../>`.
+  const linkTags = block.match(/<link\b[^>]*>/gi) ?? [];
+  for (const tag of linkTags) {
+    const rel = /\brel\s*=\s*["']([^"']+)["']/i.exec(tag)?.[1]?.toLowerCase();
+    if (rel && rel !== "alternate") continue;
+    const href = /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)')/i.exec(tag);
+    const candidate = href?.[1] ?? href?.[2];
+    if (candidate) return candidate.replace(/&amp;/g, "&");
+  }
+  return undefined;
 }
 
 /**
@@ -162,8 +175,10 @@ export function parseFeed(xml: string, fallbackSource: string): {
     const link =
       clean(field(block, "link")) ||
       atomAlternateLink(block) ||
-      attribute(block, "link", "href") ||
+      attribute(block, "item", "rdf:about") ||
       clean(field(block, "guid")) ||
+      clean(field(block, "id")) ||
+      attribute(block, "link", "href") ||
       "";
 
     // One malformed article must never abort ingestion.

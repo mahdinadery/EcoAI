@@ -340,7 +340,7 @@ export async function selectAnalysisBacklog(
     )
     .orderBy(
       sql`CASE WHEN ${news.status} = 'READY_FOR_AI' THEN 0 ELSE 1 END ASC`,
-      sql`coalesce(${news.publishedAt}, ${news.createdAt} - interval '3 days') DESC`,
+      sql`coalesce(${news.publishedAt}, ${news.createdAt}) DESC`,
     )
     .limit(limit);
 

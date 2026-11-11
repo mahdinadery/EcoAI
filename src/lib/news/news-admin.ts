@@ -109,7 +109,7 @@ export async function listAdminNews(filters: AdminNewsFilters): Promise<{
       })
       .from(news)
       .where(where)
-      .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`), desc(news.id))
+      .orderBy(desc(news.createdAt), desc(news.id))
       .limit(pageSize)
       .offset((page - 1) * pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(news).where(where),

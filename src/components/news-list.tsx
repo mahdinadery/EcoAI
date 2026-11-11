@@ -63,11 +63,16 @@ function truncate(value: string, limit: number): string {
   return `${value.slice(0, limit).trimEnd()}…`;
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return "تاریخ نامشخص";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "تاریخ نامشخص";
-  return new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(date);
+function formatDate(iso: string | null | undefined, fallbackIso?: string | null): string {
+  const primary = iso ? new Date(iso) : null;
+  if (primary && !Number.isNaN(primary.getTime())) {
+    return new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(primary);
+  }
+  const fallback = fallbackIso ? new Date(fallbackIso) : null;
+  if (fallback && !Number.isNaN(fallback.getTime())) {
+    return `دریافت: ${new Intl.DateTimeFormat("fa-IR", { dateStyle: "medium", timeStyle: "short" }).format(fallback)}`;
+  }
+  return "تاریخ نامشخص";
 }
 
 function ScoreBar({ label, score }: { label: string; score: number }) {
@@ -100,14 +105,34 @@ function StatusMark({ status }: { status: "sent" | "failed" | null }) {
 function ArticleCard({
   initialItem,
   initialDelivery,
+  adminKey = "",
 }: {
   initialItem: NewsListItem;
   initialDelivery?: NewsDeliveryState;
+  adminKey?: string;
 }) {
-  const [item, setItem] = useState<NewsListItem>(initialItem);
-  const [delivery, setDelivery] = useState<NewsDeliveryState>(
-    initialDelivery ?? { local: null, bale: null, lastSentAt: null },
-  );
+  // Overlay local optimistic edits on top of server props so `router.refresh()`
+  // immediately reflects server-side analyses and Bale deliveries without stale state.
+  const [analysisOverlay, setAnalysisOverlay] = useState<{
+    baseAnalyzedAt: string | null;
+    patch: AnalysisPatch;
+  } | null>(null);
+  const [deliveryOverlay, setDeliveryOverlay] = useState<{
+    baseLastSentAt: string | null;
+    patch: Partial<NewsDeliveryState>;
+  } | null>(null);
+
+  const item: NewsListItem =
+    analysisOverlay && analysisOverlay.baseAnalyzedAt === initialItem.analyzedAt
+      ? { ...initialItem, ...analysisOverlay.patch }
+      : initialItem;
+
+  const baseDelivery: NewsDeliveryState = initialDelivery ?? { local: null, bale: null, lastSentAt: null };
+  const delivery: NewsDeliveryState =
+    deliveryOverlay && deliveryOverlay.baseLastSentAt === baseDelivery.lastSentAt
+      ? { ...baseDelivery, ...deliveryOverlay.patch }
+      : baseDelivery;
+
   const [destination, setDestination] = useState<Destination>("bale");
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
@@ -127,10 +152,14 @@ function ArticleCard({
     setAnalyzeCode(null);
     setAnalyzeDetail(null);
 
+    const headers: Record<string, string> = {};
+    if (force) headers["Content-Type"] = "application/json";
+    if (adminKey) headers["x-admin-key"] = adminKey;
+
     try {
       const res = await fetch(`/api/news/${item.id}/analyze`, {
         method: "POST",
-        headers: force ? { "Content-Type": "application/json" } : undefined,
+        headers: Object.keys(headers).length > 0 ? headers : undefined,
         body: force ? JSON.stringify({ force: true }) : undefined,
       });
       const data = (await res.json()) as {
@@ -145,18 +174,10 @@ function ArticleCard({
       const patch = data.newsItem;
 
       if (data.success && patch) {
-        setItem((prev) => ({
-          ...prev,
-          translatedTitle: patch.translatedTitle,
-          summary: patch.summary,
-          category: patch.category,
-          importanceScore: patch.importanceScore,
-          relevanceScore: patch.relevanceScore,
-          noveltyScore: patch.noveltyScore,
-          shouldSend: patch.shouldSend,
-          analysisReason: patch.analysisReason,
-          analyzedAt: patch.analyzedAt,
-        }));
+        setAnalysisOverlay({
+          baseAnalyzedAt: initialItem.analyzedAt,
+          patch,
+        });
 
         // The analysis endpoint also runs one auto-delivery pass for this article.
         const auto = data.autoSend;
@@ -195,7 +216,10 @@ function ArticleCard({
     try {
       const res = await fetch(`/api/news/${item.id}/send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(adminKey ? { "x-admin-key": adminKey } : {}),
+        },
         body: JSON.stringify({ destination }),
       });
       const data = (await res.json()) as {
@@ -207,13 +231,13 @@ function ArticleCard({
 
       if (data.success && data.results) {
         setSendResults(data.results);
-        setDelivery((prev) => {
-          const next = { ...prev };
+        setDeliveryOverlay((prev) => {
+          const next: Partial<NewsDeliveryState> = { ...(prev?.patch ?? {}) };
           for (const outcome of data.results ?? []) {
             if (outcome.status === "sent") next[outcome.destination] = "sent";
             else if (outcome.status === "failed") next[outcome.destination] = "failed";
           }
-          return next;
+          return { baseLastSentAt: baseDelivery.lastSentAt, patch: next };
         });
       } else {
         setSendResults([
@@ -244,7 +268,10 @@ function ArticleCard({
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-surface-3 px-2.5 py-1 font-semibold text-muted">{item.source}</span>
-          <span className="text-faint">{formatDate(item.publishedAt)}</span>
+          <span className="text-faint">{formatDate(item.publishedAt, item.createdAt)}</span>
+          {item.publishedAt && item.createdAt ? (
+            <span className="text-[11px] text-faint">· ورود به کتابخانه: {formatDate(item.createdAt)}</span>
+          ) : null}
         </div>
 
         {hasAnalysis ? (
@@ -469,7 +496,15 @@ function ArticleCard({
   );
 }
 
-export function NewsList({ items, deliveryStates }: { items: NewsListItem[]; deliveryStates?: NewsDeliveryStates }) {
+export function NewsList({
+  items,
+  deliveryStates,
+  adminKey = "",
+}: {
+  items: NewsListItem[];
+  deliveryStates?: NewsDeliveryStates;
+  adminKey?: string;
+}) {
   if (items.length === 0) {
     return (
       <div className="flex min-h-56 flex-col items-center justify-center rounded-2xl border border-dashed border-line bg-surface-2/70 px-6 py-16 text-center">
@@ -483,16 +518,10 @@ export function NewsList({ items, deliveryStates }: { items: NewsListItem[]; del
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 8h8M8 12h8M8 16h5" />
           </svg>
         </div>
-        <p className="mt-5 text-sm font-semibold text-ink-soft">هنوز خبری ذخیره نشده است.</p>
+        <p className="mt-5 text-sm font-semibold text-ink-soft">مقاله‌ای با این فیلتر پیدا نشد.</p>
         <p className="mt-1 max-w-md text-xs leading-5 text-faint">
-          به داشبورد بروید و با دکمه «دریافت اخبار» اولین همگام‌سازی را انجام دهید.
+          روی دکمهٔ «دریافت مقالات جدید» در بالای همین صفحه کلیک کنید یا فیلتر جست‌وجو را پاک نمایید.
         </p>
-        <a
-          className="mt-5 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-strong"
-          href="/dashboard"
-        >
-          رفتن به داشبورد
-        </a>
       </div>
     );
   }
@@ -500,7 +529,12 @@ export function NewsList({ items, deliveryStates }: { items: NewsListItem[]; del
   return (
     <ul className="space-y-4">
       {items.map((item) => (
-        <ArticleCard initialDelivery={deliveryStates?.[item.id]} initialItem={item} key={item.id} />
+        <ArticleCard
+          adminKey={adminKey}
+          initialDelivery={deliveryStates?.[item.id]}
+          initialItem={item}
+          key={item.id}
+        />
       ))}
     </ul>
   );

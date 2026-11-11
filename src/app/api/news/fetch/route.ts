@@ -39,6 +39,14 @@ export async function POST(request: Request) {
     );
   }
   try {
+    let ingestOnly = false;
+    try {
+      const body = (await request.json()) as { ingestOnly?: boolean } | null;
+      ingestOnly = Boolean(body?.ingestOnly);
+    } catch {
+      // Empty body is fine (default full pass).
+    }
+
     const result = await ingestNews();
 
     if (!result.ok) {
@@ -53,6 +61,24 @@ export async function POST(request: Request) {
     // Recover articles that were left in AI_PROCESSING by an interrupted
     // request or server restart.
     await recoverStaleProcessing();
+
+    if (ingestOnly) {
+      return Response.json({
+        success: true,
+        ingestOnly: true,
+        source: result.source,
+        fetched: result.fetched,
+        stored: result.stored,
+        newArticleIds: result.newArticleIds,
+        queuedForAnalysis: [],
+        topicSkipped: [],
+        analyzed: [],
+        duplicates: result.duplicates,
+        skipped: result.skipped,
+        filtered: result.filtered,
+        autoSend: null,
+      });
+    }
 
     // Prefer articles fetched in this run, then continue with older backlog.
     const selectedIds: string[] = [];
@@ -72,10 +98,11 @@ export async function POST(request: Request) {
     const gated = await applyTopicGate(selectedIds);
     const aiQueue = gated.pass;
 
-    // Analyze up to 16 articles per fetch pass using 4 concurrent workers.
+    // Keep AI duration bounded to 26s so RSS ingest + AI + Bale delivery stays
+    // safely inside Render / reverse-proxy 60s HTTP windows.
     const analysisResults = await analyzeSequentially(aiQueue, {
       concurrency: 4,
-      maxDurationMs: 52_000,
+      maxDurationMs: 26_000,
     });
 
     // Deliver both newly-analyzed papers and any previously-analyzed qualifying

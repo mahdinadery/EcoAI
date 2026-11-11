@@ -25,15 +25,15 @@ export type AdminNewsFilters = {
 
 export const ADMIN_PAGE_SIZE = 20;
 
-function buildWhere(filters: AdminNewsFilters) {
+export function buildAdminNewsWhere(filters: AdminNewsFilters) {
   const conditions = [];
 
-  // The admin list can opt into seeing DUPLICATE / SKIPPED_OFFTOPIC rows; the
-  // default view keeps them out of the operational list noise.
-  const statuses = filters.status && NEWS_STATUSES.includes(filters.status as NewsStatus) ? [filters.status] : null;
+  // Allow explicit selection of hidden statuses while retaining the default
+  // exclusions. Use Drizzle's parameterized equality for a single status.
+  const status = filters.status && NEWS_STATUSES.includes(filters.status as NewsStatus) ? filters.status : null;
   conditions.push(
-    statuses
-      ? sql`${news.status} IN (${sql.join(statuses.map((s) => sql`${s}`), sql`, `)})}`
+    status
+      ? eq(news.status, status)
       : sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
   );
 
@@ -87,7 +87,7 @@ export async function listAdminNews(filters: AdminNewsFilters): Promise<{
   pageSize: number;
   totalPages: number;
 }> {
-  const where = buildWhere(filters);
+  const where = buildAdminNewsWhere(filters);
   const page = Math.max(1, filters.page ?? 1);
   const pageSize = Math.min(Math.max(filters.pageSize ?? ADMIN_PAGE_SIZE, 5), 100);
 

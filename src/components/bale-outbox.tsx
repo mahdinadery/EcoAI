@@ -13,6 +13,7 @@ type OutboxEntry = {
   createdAt: string;
   messageId: string | null;
   error: string | null;
+  canForwardToBale?: boolean;
 };
 
 const statusMeta: Record<OutboxStatus, { label: string; className: string }> = {
@@ -29,6 +30,8 @@ function formatTime(iso: string): string {
 export function BaleOutbox({ refreshKey }: { refreshKey?: number }) {
   const [entries, setEntries] = useState<OutboxEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [forwarding, setForwarding] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
     return fetch("/api/bale/outbox", { cache: "no-store" })
@@ -84,6 +87,22 @@ export function BaleOutbox({ refreshKey }: { refreshKey?: number }) {
     };
   }, [load]);
 
+  async function forwardToBale(entry: OutboxEntry) {
+    if (forwarding || !window.confirm("این متن عیناً به بله ارسال می‌شود. ابتدا کانال را بررسی کنید تا از ارسال تکراری جلوگیری شود. ادامه می‌دهید؟")) return;
+    setForwarding(entry.id);
+    setNotice(null);
+    try {
+      const response = await fetch(`/api/admin/deliveries/${entry.id}/forward-bale`, { method: "POST" });
+      const data = await response.json() as { message?: string };
+      setNotice(data.message ?? (response.status === 401 ? "ابتدا با کلید مدیریتی وارد شوید." : "نتیجه نامشخص است؛ کانال بله را بررسی کنید."));
+      await load();
+    } catch {
+      setNotice("نتیجه نامشخص است؛ قبل از تلاش دوباره کانال بله را بررسی کنید.");
+    } finally {
+      setForwarding(null);
+    }
+  }
+
   const autoCount = entries.filter((e) => e.trigger === "auto" && e.status === "sent").length;
 
   return (
@@ -116,6 +135,7 @@ export function BaleOutbox({ refreshKey }: { refreshKey?: number }) {
         </button>
       </div>
 
+      {notice ? <p role="status" className="mb-3 rounded bg-surface-2 p-3 text-sm text-ink">{notice}</p> : null}
       {loading ? (
         <p className="py-8 text-center text-sm text-faint">در حال بارگذاری صندوق خروجی...</p>
       ) : entries.length === 0 ? (
@@ -160,6 +180,11 @@ export function BaleOutbox({ refreshKey }: { refreshKey?: number }) {
                 <div className="mt-3 whitespace-pre-line text-sm leading-6 text-ink-soft font-sans">
                   {entry.text}
                 </div>
+                {entry.canForwardToBale ? (
+                  <button type="button" disabled={Boolean(forwarding)} onClick={() => void forwardToBale(entry)} className="mt-3 rounded border border-line px-3 py-1 text-xs text-ink disabled:opacity-50">
+                    {forwarding === entry.id ? "در حال ارسال به بله..." : "ارسال این پیام محلی به بله"}
+                  </button>
+                ) : null}
                 {entry.error ? (
                   <p
                     className="mt-2 break-words rounded-lg bg-surface px-3 py-2 font-mono text-xs text-danger-ink ring-1 ring-danger-line"

@@ -113,6 +113,8 @@ export type ScheduleBulletinSummary = {
   itemCount: number;
   /** Why it was skipped ("no_qualifying_items" | "nothing_new" | "delivery_failed"), null on success. */
   reason: string | null;
+  /** Each destination is reported separately; local is not a Bale delivery. */
+  destinations?: Array<{ destination: "local" | "bale"; sent: boolean; reason: string | null; detail?: string }>;
 };
 
 /** Result of the optional coverage-gap search phase of one pass. */

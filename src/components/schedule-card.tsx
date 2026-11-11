@@ -61,6 +61,7 @@ type RunSummary = {
     sent: boolean;
     itemCount: number;
     reason: string | null;
+    destinations?: Array<{ destination: "local" | "bale"; sent: boolean; reason: string | null; detail?: string }>;
   } | null;
   errors: string[];
 };
@@ -376,11 +377,14 @@ export function ScheduleCard({
             : bulletin?.reason === "delivery_failed"
               ? "ارسال ناموفق بود"
               : (bulletin?.reason ?? "—");
+      const destinations = bulletin?.destinations?.map((result) =>
+        `${result.destination === "bale" ? "بله" : "محلی"}: ${result.sent ? "موفق" : result.detail ?? result.reason ?? "بدون ارسال"}`,
+      ).join("؛ ");
       setMessage({
         kind: bulletin?.sent ? "ok" : "err",
-        text: bulletin?.sent
-          ? `بولتن با ${bulletin.itemCount.toLocaleString("fa-IR")} خبر ارسال شد.`
-          : `بولتن ارسال نشد (${reasonLabel}).`,
+        text: `${bulletin?.sent
+          ? `بولتن با ${bulletin.itemCount.toLocaleString("fa-IR")} مقاله پردازش شد.`
+          : `بولتن ارسال نشد (${reasonLabel}).`}${destinations ? ` ${destinations}` : ""}`,
       });
     } catch {
       setMessage({ kind: "err", text: "ارتباط با سرور برقرار نشد." });
@@ -662,8 +666,9 @@ export function ScheduleCard({
                   {lastRun.bulletin ? (
                     <span className="mr-2 rounded bg-surface-3 px-1.5 py-0.5 text-[10px] text-muted">
                       {lastRun.bulletin.sent
-                        ? `بولتن: ${lastRun.bulletin.itemCount} خبر ارسال شد`
+                        ? `بولتن: ${lastRun.bulletin.itemCount} مقاله`
                         : `بولتن ارسال نشد (${lastRun.bulletin.reason ?? "—"})`}
+                      {lastRun.bulletin.destinations?.map((result) => ` · ${result.destination === "bale" ? "بله" : "محلی"}: ${result.sent ? "موفق" : result.detail ?? result.reason ?? "ارسال نشد"}`).join("")}
                     </span>
                   ) : null}
                   {lastRun.gapSearch ? (

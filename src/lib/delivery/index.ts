@@ -251,6 +251,8 @@ export async function sendBulletinDelivery(params: {
    * from their per-item sends — the digest is a wrap-up, not a second delivery.
    */
   recordRows?: boolean;
+  /** A representative item used to log failures even for recap-only bulletins. */
+  diagnosticNewsId?: string;
 }): Promise<BulletinSendResult> {
   const { text, newsIds, target, trigger } = params;
   const recordRows = params.recordRows ?? true;
@@ -276,29 +278,30 @@ export async function sendBulletinDelivery(params: {
       errorMessage: outcome.errorMessage,
     });
 
-    if (!outcome.ok || !recordRows) continue;
-
-    for (const newsId of newsIds) {
+    // Record failures as well, including recap-only messages, so the outbox
+    // exposes the provider's actual error. One row avoids duplicate retries.
+    const ids = outcome.ok ? (recordRows ? newsIds : []) : [params.diagnosticNewsId ?? newsIds[0]].filter((id): id is string => Boolean(id));
+    for (const newsId of ids) {
       try {
         await persistAttempt({
           newsId,
           destination,
           status,
           message: text,
-          errorMessage: null,
+          errorMessage: outcome.errorMessage,
           trigger,
           providerMessageId: outcome.providerMessageId,
         });
-        recordedFor.push(newsId);
+        if (outcome.ok) recordedFor.push(newsId);
       } catch (error) {
-        // The digest DID go out — a log failure must not flip the verdict.
         const detail = error instanceof Error ? error.message : String(error);
         console.error("[bulletin] delivery log failed:", detail.slice(0, 160));
       }
     }
   }
 
-  return { ok: results.some((result) => result.ok), results, recordedFor };
+  // Local success is not confirmation that Bale received the bulletin.
+  return { ok: results.length > 0 && results.every((result) => result.ok), results, recordedFor };
 }
 
 export type DeliveryState = {

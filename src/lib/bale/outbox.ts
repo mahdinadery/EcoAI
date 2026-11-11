@@ -22,6 +22,8 @@ export type OutboxEntry = {
   createdAt: string;
   messageId: string | null;
   error: string | null;
+  /** Only persistent local successes are eligible for explicit Bale forwarding. */
+  canForwardToBale?: boolean;
 };
 
 type RecordInput = {
@@ -97,8 +99,9 @@ export async function listOutboxEntries(): Promise<OutboxEntry[]> {
       channel,
       trigger: (row.triggeredBy === "auto" ? "auto" : "manual") as "auto" | "manual",
       createdAt: row.createdAt.toISOString(),
-      messageId: row.id,
+      messageId: row.providerMessageId,
       error: row.errorMessage ?? null,
+      canForwardToBale: row.destination === "local" && row.status === "sent" && Boolean(row.message?.trim()),
     };
   });
 

@@ -23,6 +23,7 @@ import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { fetchArticleBody } from "./article-extractor";
 import { canonicalizeUrl } from "./canonical-url";
 import { similarityKeyOf } from "./corroboration";
+import { AI_ECONOMICS_PACK } from "./news-packs";
 import { normalizeContent, normalizeTitle } from "./normalize";
 import { fetchFeed, parseFeed, type NewsFetchResult, type NormalizedNews } from "./rss";
 import { evaluateTopicFilter, evaluateWithFirstParagraphFallback, isTopicGateActive } from "./topic-filter";
@@ -65,6 +66,42 @@ type Candidate = {
 };
 
 /**
+ * True when a registered RSS source is already dedicated specifically to AI
+ * (e.g. MIT Tech Review AI, Brookings AI, OpenAI News, Ars Technica AI, The Verge AI, Google AI).
+ * Articles from dedicated AI feeds should never be hidden as `SKIPPED_OFFTOPIC`
+ * merely because a headline uses economic phrasing without literal "AI" or
+ * because Cloudflare blocked `fetchArticleBody` during ingestion.
+ */
+function isDedicatedAiFeed(source: Pick<NewsSourceRow, "name" | "category"> | null | undefined): boolean {
+  if (!source) return false;
+  const label = `${source.name} ${source.category ?? ""}`;
+  return /\b(artificial intelligence|ai|openai|deepmind|anthropic|هوش مصنوعی)\b/i.test(label);
+}
+
+/**
+ * Restores papers that were previously mis-classified as `DUPLICATE` solely by
+ * the legacy breaking-news 4-word `similarityKey` heuristic despite having a
+ * distinct `canonicalUrl` from their `duplicateOfId` row.
+ */
+async function healFalseSimilarityDuplicates(): Promise<void> {
+  try {
+    await db.execute(sql`
+      UPDATE news AS dup
+      SET status = 'READY_FOR_AI',
+          duplicate_of_id = NULL,
+          updated_at = now()
+      FROM news AS orig
+      WHERE dup.status = 'DUPLICATE'
+        AND dup.duplicate_of_id = orig.id
+        AND coalesce(dup.canonical_url, dup.url) <> coalesce(orig.canonical_url, orig.url)
+        AND (dup.external_id IS NULL OR orig.external_id IS NULL OR dup.external_id <> orig.external_id)
+    `);
+  } catch {
+    // Non-blocking self-heal
+  }
+}
+
+/**
  * Stage: topic relevance gate (cheap keyword rules, BEFORE AI) with second-chance
  * **first-paragraph inspection** for reports whose title/RSS teaser did not
  * reveal topic relevance. Only after inspecting the opening paragraph of the
@@ -73,6 +110,7 @@ type Candidate = {
 async function partitionByTopic(
   fresh: Candidate[],
   topicFilter: AiTopicFilterConfig | null,
+  source?: Pick<NewsSourceRow, "name" | "category"> | null,
 ): Promise<{ pass: Candidate[]; skip: Candidate[] }> {
   if (fresh.length === 0) return { pass: fresh, skip: [] };
 
@@ -80,6 +118,7 @@ async function partitionByTopic(
     return { pass: fresh, skip: [] };
   }
 
+  const dedicatedAiFeed = isDedicatedAiFeed(source);
   const pass: Candidate[] = [];
   const skip: Candidate[] = [];
   const needsLeadCheck: Candidate[] = [];
@@ -94,6 +133,9 @@ async function partitionByTopic(
       topicFilter,
     );
     if (result.verdict === "pass") {
+      pass.push(candidate);
+    } else if (result.reason === "not_in_selected_topics" && dedicatedAiFeed) {
+      // Feed itself is already scoped to AI; let the full AI analyzer score its economic depth.
       pass.push(candidate);
     } else if (result.reason === "not_in_selected_topics" && (candidate.item.content ?? "").trim().length < 300) {
       needsLeadCheck.push(candidate);
@@ -130,14 +172,21 @@ async function partitionByTopic(
             candidate.item.description = firstParagraph.slice(0, 600);
           }
         }
-        if (outcome.verdict === "pass") pass.push(candidate);
-        else skip.push(candidate);
+        // If `firstParagraph` was null (e.g. target publisher blocked bot scraping with 403),
+        // fail open to `pass` rather than hiding potentially relevant papers in `SKIPPED_OFFTOPIC`.
+        if (outcome.verdict === "pass" || (checkedFirstParagraph && !firstParagraph)) {
+          pass.push(candidate);
+        } else {
+          skip.push(candidate);
+        }
       } else {
-        skip.push(candidate);
+        pass.push(candidate);
       }
     }
 
-    skip.push(...overflow);
+    // Never silently reject items past MAX_LEAD_CHECKS_PER_FEED without checking their first paragraph:
+    // keep them as `READY_FOR_AI` so they appear in the library and `applyTopicGate` inspects them later.
+    pass.push(...overflow);
   }
 
   return { pass, skip };
@@ -335,46 +384,23 @@ async function updateCorroborationCounts(keys: string[]): Promise<void> {
 /** Stage: split candidates into fresh items vs. matches of already-stored news. */
 async function partitionDuplicates(
   candidates: Candidate[],
-  sourceName: string,
 ): Promise<{
   fresh: Candidate[];
   duplicateRefs: Array<{ candidate: Candidate; originalId: string }>;
 }> {
   const { byCanonical, byExternalId } = await findExistingMatches(candidates);
 
-  // Phase 3 (#8): a re-fetch of the same story (same similarity key AND same
-  // source, within 48h) is a near-duplicate — better than title equality.
-  // The same key on a DIFFERENT source is corroboration, not a duplicate.
-  const bySimilarity = new Map<string, string>();
-  const keyed = candidates.filter((candidate) => similarityKeyOf(candidate.item.title));
-  for (let index = 0; index < keyed.length; index += CHUNK_SIZE) {
-    const chunk = keyed.slice(index, index + CHUNK_SIZE);
-    const keys = chunk.map((candidate) => similarityKeyOf(candidate.item.title));
-    const rows = await db
-      .select({ id: news.id, similarityKey: news.similarityKey })
-      .from(news)
-      .where(
-        and(
-          inArray(news.similarityKey, keys),
-          eq(news.source, sourceName),
-          gte(news.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
-        ),
-      );
-    for (const row of rows) {
-      if (row.similarityKey && !bySimilarity.has(row.similarityKey)) {
-        bySimilarity.set(row.similarityKey, row.id);
-      }
-    }
-  }
-
+  // Unlike wire-service breaking news, distinct research/analytical papers from
+  // the same publisher (e.g. NBER, VoxEU, Brookings) frequently share 4 topic
+  // keywords (`artificial_intelligence_productivity_labor`). Only canonical URL
+  // or upstream `externalId` constitutes an actual duplicate paper.
   const fresh: Candidate[] = [];
   const duplicateRefs: Array<{ candidate: Candidate; originalId: string }> = [];
 
   for (const candidate of candidates) {
     const matchByCanonical = byCanonical.get(candidate.canonical);
     const matchByExternal = candidate.item.externalId ? byExternalId.get(candidate.item.externalId) : undefined;
-    const matchBySimilarity = bySimilarity.get(similarityKeyOf(candidate.item.title));
-    const originalId = matchByCanonical ?? matchByExternal ?? matchBySimilarity;
+    const originalId = matchByCanonical ?? matchByExternal;
 
     if (originalId) {
       duplicateRefs.push({ candidate, originalId });
@@ -410,12 +436,12 @@ export async function ingestFromSource(source: NewsSourceRow): Promise<PipelineR
 
   try {
     const candidates = dedupeWithinBatch(toCandidates(fetched.items, source.maxItemsPerFetch));
-    const { fresh, duplicateRefs } = await partitionDuplicates(candidates, source.name);
+    const { fresh, duplicateRefs } = await partitionDuplicates(candidates);
 
     // Cheap topic gate BEFORE anything AI-related: filtered rows are stored as
     // SKIPPED_OFFTOPIC (only after checking the first paragraph) and excluded from newArticleIds.
     const topicFilter = await loadTopicFilter();
-    const { pass, skip } = await partitionByTopic(fresh, topicFilter);
+    const { pass, skip } = await partitionByTopic(fresh, topicFilter, source);
 
     const { created, filteredCreated, duplicateRowsStored, newArticleIds } = await storeCandidates(
       pass,
@@ -585,7 +611,7 @@ export async function ingestSearchItems(
   sourceName: string,
 ): Promise<PipelineReport> {
   const candidates = dedupeWithinBatch(toCandidates(items, Math.max(items.length, 1)));
-  const { fresh, duplicateRefs } = await partitionDuplicates(candidates, sourceName);
+  const { fresh, duplicateRefs } = await partitionDuplicates(candidates);
 
   // Same cheap topic gate as feeds — search results can be off-topic noise.
   const topicFilter = await loadTopicFilter();
@@ -611,6 +637,42 @@ export async function ingestSearchItems(
   };
 }
 
+/**
+ * Ensures out-of-the-box deployments that have 0 registered RSS sources in DB
+ * and no legacy `NEWS_SOURCE_RSS_URL` env automatically seed the curated
+ * `AI_ECONOMICS_PACK` feeds so ingestion works immediately without manual setup.
+ */
+async function ensureDefaultSourcesWhenEmpty(): Promise<NewsSourceRow[]> {
+  const existingAll = await db.select().from(newsSources).limit(1);
+  if (existingAll.length > 0 || process.env.NEWS_SOURCE_RSS_URL?.trim()) {
+    return [];
+  }
+  try {
+    await db
+      .insert(newsSources)
+      .values(
+        AI_ECONOMICS_PACK.sources.map((candidate) => ({
+          name: candidate.name,
+          type: candidate.type,
+          url: candidate.url,
+          description: candidate.description,
+          category: candidate.category,
+          priority: candidate.priority,
+          active: true,
+          fetchIntervalMinutes: candidate.fetchIntervalMinutes,
+          maxItemsPerFetch: candidate.maxItemsPerFetch,
+        })),
+      )
+      .onConflictDoNothing({ target: newsSources.url });
+    return db
+      .select()
+      .from(newsSources)
+      .where(and(eq(newsSources.active, true), eq(newsSources.type, "rss")));
+  } catch {
+    return [];
+  }
+}
+
 export async function ingestAllActiveSources(): Promise<
   | {
       ok: true;
@@ -625,10 +687,16 @@ export async function ingestAllActiveSources(): Promise<
     }
   | { ok: false; code: string; message: string; detail?: string | null }
 > {
-  const activeSources = await db
+  await healFalseSimilarityDuplicates();
+
+  let activeSources = await db
     .select()
     .from(newsSources)
     .where(and(eq(newsSources.active, true), eq(newsSources.type, "rss")));
+
+  if (activeSources.length === 0) {
+    activeSources = await ensureDefaultSourcesWhenEmpty();
+  }
 
   if (activeSources.length === 0) {
     const legacy = await ingestViaPipeline();
@@ -814,10 +882,20 @@ export async function runDueSources(now = new Date()): Promise<{
   fetched: number;
   results: Array<{ sourceId: string; sourceName: string; status: "fetched" | "skipped" | "failed"; detail?: string }>;
 }> {
-  const activeSources = await db.select().from(newsSources).where(and(eq(newsSources.active, true), eq(newsSources.type, "rss"))).orderBy(desc(newsSources.priority));
+  await healFalseSimilarityDuplicates();
+
+  let activeSources = await db
+    .select()
+    .from(newsSources)
+    .where(and(eq(newsSources.active, true), eq(newsSources.type, "rss")))
+    .orderBy(desc(newsSources.priority));
+
+  if (activeSources.length === 0) {
+    activeSources = await ensureDefaultSourcesWhenEmpty();
+  }
 
   const results: Array<{ sourceId: string; sourceName: string; status: "fetched" | "skipped" | "failed"; detail?: string }> = [];
-  let fetched = 0;
+  const dueSources: NewsSourceRow[] = [];
 
   for (const source of activeSources) {
     const intervalMs = Math.max(1, source.fetchIntervalMinutes) * 60_000;
@@ -827,11 +905,25 @@ export async function runDueSources(now = new Date()): Promise<{
       results.push({ sourceId: source.id, sourceName: source.name, status: "skipped", detail: "هنوز زمان دریافت بعدی فرا نرسیده است." });
       continue;
     }
+    dueSources.push(source);
+  }
 
-    // ingestFromSource never throws; wrap anyway so a DB hiccup here cannot
-    // abort the sweep for the remaining sources.
-    try {
-      const report = await ingestFromSource(source);
+  let fetched = 0;
+  if (dueSources.length > 0) {
+    const settledList = await mapWithConcurrency(dueSources, SOURCE_FETCH_CONCURRENCY, (source) => ingestFromSource(source));
+    for (let index = 0; index < settledList.length; index += 1) {
+      const source = dueSources[index];
+      const settled = settledList[index];
+      if (settled.status === "rejected") {
+        results.push({
+          sourceId: source.id,
+          sourceName: source.name,
+          status: "failed",
+          detail: String(settled.reason).slice(0, 200),
+        });
+        continue;
+      }
+      const report = settled.value;
       if (report.ok) {
         fetched += 1;
         results.push({
@@ -843,9 +935,6 @@ export async function runDueSources(now = new Date()): Promise<{
       } else {
         results.push({ sourceId: source.id, sourceName: source.name, status: "failed", detail: report.message });
       }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      results.push({ sourceId: source.id, sourceName: source.name, status: "failed", detail: detail.slice(0, 200) });
     }
   }
 

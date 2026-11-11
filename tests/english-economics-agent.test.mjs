@@ -292,3 +292,38 @@ test("upgradeLegacySystemPrompt, upgradeLegacySummaryInstruction & upgradeLegacy
   assert.equal(upgradeLegacyTemplateFooter(LEGACY_MAIN_EVENT_PUBLISHING_TEMPLATE), DEFAULT_PUBLISHING_TEMPLATE);
   assert.equal(upgradeLegacyTemplateFooter("{title}\nمحور سفارشی: {mainEvent}"), "{title}\nمحور سفارشی: {mainEvent}");
 });
+
+test("parseFeed parses NBER RDF 1.0 dateless items and Atom 1.0 entries with single-quoted or non-alternate links", () => {
+  const nberRdf = `<?xml version="1.0" encoding="UTF-8"?>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns="http://purl.org/rss/1.0/">
+    <channel rdf:about="https://www.nber.org">
+      <title>New Working Papers</title>
+    </channel>
+    <item rdf:about="https://www.nber.org/papers/w33201">
+      <title>Generative AI and Firm Productivity -- by Daron Acemoglu</title>
+      <description>We study firm-level AI adoption across manufacturing establishments.</description>
+    </item>
+  </rdf:RDF>`;
+
+  const parsedRdf = parseFeed(nberRdf, "NBER");
+  assert.equal(parsedRdf.items.length, 1);
+  assert.equal(parsedRdf.items[0].url, "https://www.nber.org/papers/w33201");
+  assert.equal(parsedRdf.items[0].publishedAt, null);
+
+  const atomXml = `<?xml version="1.0" encoding="utf-8"?>
+  <feed xmlns="http://www.w3.org/2005/Atom">
+    <title>AI Economics Feed</title>
+    <entry>
+      <title>Hyperscaler CapEx and Compute Pricing</title>
+      <link rel="enclosure" href="https://cdn.example.com/chart.png" />
+      <link href='https://example.com/articles/hyperscaler-capex' />
+      <id>tag:example.com,2026:hyperscaler-capex</id>
+      <summary>Analysis of GPU depreciation schedules and inference margins.</summary>
+    </entry>
+  </feed>`;
+
+  const parsedAtom = parseFeed(atomXml, "Atom");
+  assert.equal(parsedAtom.items.length, 1);
+  assert.equal(parsedAtom.items[0].url, "https://example.com/articles/hyperscaler-capex");
+});
+

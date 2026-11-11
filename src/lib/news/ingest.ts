@@ -13,7 +13,7 @@
 
 import { db } from "@/db";
 import { aiAnalyses, news } from "@/db/schema";
-import { desc, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { ingestAllActiveSources } from "./source-ingest";
 
 export type IngestResult =
@@ -130,6 +130,8 @@ export type NewsListItem = {
   source: string;
   description: string | null;
   publishedAt: string | null;
+  createdAt?: string | null;
+  status?: string | null;
 
   // AI analysis fields (Milestone 4+)
   summary: string | null;
@@ -142,46 +144,123 @@ export type NewsListItem = {
   analyzedAt: string | null;
 };
 
-/** Public news list (user page). Duplicate-marked rows are excluded. */
-export async function listLatestNews(limit = 60): Promise<NewsListItem[]> {
-  const rows = await db
-    .select({
-      id: news.id,
-      title: news.title,
-      translatedTitle: news.translatedTitle,
-      url: news.url,
-      source: news.source,
-      description: news.description,
-      publishedAt: news.publishedAt,
-      summary: news.summary,
-      category: news.category,
-      importanceScore: news.importanceScore,
-      relevanceScore: news.relevanceScore,
-      noveltyScore: news.noveltyScore,
-      shouldSend: news.shouldSend,
-      analysisReason: news.analysisReason,
-      analyzedAt: news.analyzedAt,
-    })
-    .from(news)
-    .where(sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`)
-    .orderBy(desc(sql`coalesce(${news.publishedAt}, ${news.createdAt} - interval '3 days')`), desc(news.id))
-    .limit(Math.min(Math.max(limit, 1), 200));
+export type LibraryNewsFilters = {
+  q?: string;
+  filter?: "all" | "analyzed" | "pending" | "ready_to_send" | "offtopic";
+  sort?: "fetched" | "published";
+  page?: number;
+  pageSize?: number;
+};
 
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    translatedTitle: row.translatedTitle,
-    url: row.url,
-    source: row.source,
-    description: row.description,
-    publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
-    summary: row.summary,
-    category: row.category,
-    importanceScore: row.importanceScore,
-    relevanceScore: row.relevanceScore,
-    noveltyScore: row.noveltyScore,
-    shouldSend: row.shouldSend,
-    analysisReason: row.analysisReason,
-    analyzedAt: row.analyzedAt ? row.analyzedAt.toISOString() : null,
-  }));
+export const LIBRARY_PAGE_SIZE = 60;
+
+/**
+ * Paginated, filterable News Library query (`/news` — کتابخانه اخبار).
+ *
+ * Defaults to ordering by `createdAt DESC` (`جدیدترین دریافتی‌ها`) rather than
+ * `publishedAt` so newly ingested working papers — including dateless NBER feeds
+ * (`publishedAt = NULL`) and research reports published days earlier — ALWAYS
+ * appear immediately at the top of the library when fetched.
+ */
+export async function listLibraryNews(filters: LibraryNewsFilters = {}): Promise<{
+  items: NewsListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const conditions = [];
+  const mode = filters.filter ?? "all";
+
+  if (mode === "offtopic") {
+    conditions.push(eq(news.status, "SKIPPED_OFFTOPIC"));
+  } else {
+    conditions.push(sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`);
+    if (mode === "analyzed") conditions.push(sql`${news.analyzedAt} IS NOT NULL`);
+    if (mode === "pending") conditions.push(sql`${news.analyzedAt} IS NULL`);
+    if (mode === "ready_to_send") conditions.push(eq(news.shouldSend, true));
+  }
+
+  if (filters.q?.trim()) {
+    const pattern = `%${filters.q.trim().slice(0, 120)}%`;
+    conditions.push(
+      or(
+        ilike(news.title, pattern),
+        ilike(news.translatedTitle, pattern),
+        ilike(news.source, pattern),
+        ilike(news.url, pattern),
+      ),
+    );
+  }
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+  const page = Math.max(1, filters.page ?? 1);
+  const pageSize = Math.min(Math.max(filters.pageSize ?? LIBRARY_PAGE_SIZE, 10), 200);
+  const orderExpr =
+    filters.sort === "published"
+      ? desc(sql`coalesce(${news.publishedAt}, ${news.createdAt})`)
+      : desc(news.createdAt);
+
+  const [rows, [countRow]] = await Promise.all([
+    db
+      .select({
+        id: news.id,
+        title: news.title,
+        translatedTitle: news.translatedTitle,
+        url: news.url,
+        source: news.source,
+        description: news.description,
+        publishedAt: news.publishedAt,
+        createdAt: news.createdAt,
+        status: news.status,
+        summary: news.summary,
+        category: news.category,
+        importanceScore: news.importanceScore,
+        relevanceScore: news.relevanceScore,
+        noveltyScore: news.noveltyScore,
+        shouldSend: news.shouldSend,
+        analysisReason: news.analysisReason,
+        analyzedAt: news.analyzedAt,
+      })
+      .from(news)
+      .where(where)
+      .orderBy(orderExpr, desc(news.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+    db.select({ total: sql<number>`count(*)::int` }).from(news).where(where),
+  ]);
+
+  const total = countRow?.total ?? 0;
+
+  return {
+    items: rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      translatedTitle: row.translatedTitle,
+      url: row.url,
+      source: row.source,
+      description: row.description,
+      publishedAt: row.publishedAt ? row.publishedAt.toISOString() : null,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+      status: row.status,
+      summary: row.summary,
+      category: row.category,
+      importanceScore: row.importanceScore,
+      relevanceScore: row.relevanceScore,
+      noveltyScore: row.noveltyScore,
+      shouldSend: row.shouldSend,
+      analysisReason: row.analysisReason,
+      analyzedAt: row.analyzedAt ? row.analyzedAt.toISOString() : null,
+    })),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+  };
+}
+
+/** Public news list helper (orders newest-ingested first so fresh papers appear immediately). */
+export async function listLatestNews(limit = 60): Promise<NewsListItem[]> {
+  const result = await listLibraryNews({ page: 1, pageSize: Math.min(Math.max(limit, 1), 200), sort: "fetched" });
+  return result.items;
 }

@@ -1,3 +1,4 @@
+import { checkAdminAccess } from "@/lib/admin/access";
 import { getTelegramConfigStatus, getTelegramDeliveryMode, isTelegramMirrorEnabled, sendTelegramMessageWithChunks } from "@/lib/telegram/client";
 import { lastTelegramError, telegramDeliveryStats, telegramMirrorHealth } from "@/lib/delivery/telegram";
 
@@ -15,8 +16,15 @@ const TEST_MESSAGE =
  *           news delivery uses
  *
  * The bot token stays on the server; only a safe, redacted result is returned.
+ * Both methods sit behind the same admin gate as `/api/bale/diagnostics`
+ * (header `x-admin-key`, `?key=`, or the admin session cookie).
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const access = checkAdminAccess(request);
+  if (!access.authorized) {
+    return Response.json({ success: false, message: access.reason }, { status: 401 });
+  }
+
   const status = getTelegramConfigStatus();
   const stats = await telegramDeliveryStats();
   const lastError = await lastTelegramError();
@@ -39,7 +47,12 @@ export async function GET() {
   });
 }
 
-export async function POST() {
+export async function POST(request: Request) {
+  const access = checkAdminAccess(request);
+  if (!access.authorized) {
+    return Response.json({ success: false, message: access.reason }, { status: 401 });
+  }
+
   try {
     if (!isTelegramMirrorEnabled()) {
       const status = getTelegramConfigStatus();

@@ -29,9 +29,12 @@
 ## ۳) تست
 
 ```
-curl -s https://<app-url>/api/telegram/test              # وضعیت تنظیمات + شمارش ارسال‌ها
-curl -s -X POST https://<app-url>/api/telegram/test      # ارسال یک پیام آزمایشی واقعی
+# ADMIN_ACCESS_KEY تنظیم شده؟ با ?key= یا هدر x-admin-key بفرستید
+curl -s "https://<app-url>/api/telegram/test?key=<ADMIN_ACCESS_KEY>"           # وضعیت + شمارش‌ها
+curl -s -X POST "https://<app-url>/api/telegram/test?key=<ADMIN_ACCESS_KEY>"   # پیام آزمایشی واقعی
 ```
+
+در مرورگر، چون پس از ورود کلید ادمین کوکی `HttpOnly` ست می‌شود، همین آدرس بدون `?key=` هم کار می‌کند.
 
 در داشبورد/`/admin/deliveries` هم یک نوار «آینهٔ تلگرام» هست: فعال/غیرفعال، تعداد ارسال موفق و ناموفق، آخرین خطا.
 

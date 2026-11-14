@@ -80,6 +80,35 @@ export function publishingStatusTone(status: string): "muted" | "warning" | "suc
 }
 
 /** True when a status represents a candidate that can still be acted upon. */
+/** Persian label for any `deliveries.destination` value, including mirrors. */
+export const DESTINATION_LABELS: Record<string, string> = {
+  local: "صندوق محلی (Local)",
+  bale: "بله (Bale)",
+  telegram: "تلگرام (Telegram)",
+};
+
+export function destinationLabel(value: string): string {
+  return DESTINATION_LABELS[value] ?? value;
+}
+
+/** Short label for tables and filter chips. */
+export function destinationShortLabel(value: string): string {
+  return value === "bale" ? "بله" : value === "telegram" ? "تلگرام" : value === "local" ? "Local" : value;
+}
+
+/**
+ * A `deliveries.destination` value the publishing layer can act on.
+ *
+ * `telegram` is not a selectable target (it mirrors every Bale send — see
+ * src/lib/delivery/telegram.ts), but its ledger rows are real delivery records
+ * and a failed one must stay retryable from /admin/deliveries.
+ */
+export type PublishingDestination = DeliveryDestination | "telegram";
+
+export function isPublishingDestination(value: unknown): value is PublishingDestination {
+  return value === "telegram" || isDeliveryDestination(value);
+}
+
 export function isOpenCandidate(status: string): boolean {
   return (OPEN_CANDIDATE_STATUSES as readonly string[]).includes(status);
 }
@@ -106,6 +135,19 @@ export type DeliverySendResult =
       ok: true;
       message: string;
       results: DestinationResult[];
+      /**
+       * Independent Telegram mirror of the Bale copy. Reported to humans, never
+       * folded into `results` (an automatic pass must not treat a Telegram
+       * problem as a failed delivery).
+       */
+      telegram?: {
+        attempted: boolean;
+        ok: boolean;
+        status: string;
+        reason: string | null;
+        messageId: string | null;
+        errorMessage: string | null;
+      } | null;
     }
   | {
       ok: false;
@@ -113,6 +155,10 @@ export type DeliverySendResult =
       message: string;
       detail?: string | null;
     };
+
+export function isDeliveryDestination(value: unknown): value is DeliveryDestination {
+  return typeof value === "string" && (DELIVERY_DESTINATIONS as readonly string[]).includes(value);
+}
 
 export function isDeliveryTarget(value: unknown): value is DeliveryTarget {
   return typeof value === "string" && (DELIVERY_TARGETS as readonly string[]).includes(value);

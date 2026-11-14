@@ -8,7 +8,7 @@ import { AdminPageErrorShell } from "@/components/admin/admin-page-error-shell";
 import { adminKeyForClient, getAdminPageAccess } from "@/lib/admin/page-access";
 import { runWithSchemaRepair } from "@/lib/admin/schema-sync";
 import { getAdminNewsDetail } from "@/lib/news/news-admin";
-import { publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
+import { destinationShortLabel, publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
 import { NewsAdminActions } from "@/components/admin/news-admin-actions";
 import { NewsStatusTones } from "@/components/admin/news-status-pill";
 import { Sidebar } from "@/components/sidebar";
@@ -262,7 +262,7 @@ export default async function AdminNewsDetailPage({ params, searchParams }: Page
                     <li className="rounded-lg border border-line-soft bg-surface-2/60 px-3 py-2" key={attempt.id}>
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <StatusBadge tone={publishingStatusTone(attempt.status)}>{publishStatusLabel(attempt.status)}</StatusBadge>
-                        <span className="font-bold text-muted">{attempt.destination === "bale" ? "بله" : "Local"}</span>
+                        <span className="font-bold text-muted">{destinationShortLabel(attempt.destination)}</span>
                         <span className="text-faint">{attempt.triggeredBy === "auto" ? "خودکار 🤖" : "دستی 👤"}</span>
                         {attempt.overrideRequested ? (
                           <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold text-brand-ink ring-1 ring-brand-line">override</span>

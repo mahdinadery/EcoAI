@@ -38,8 +38,30 @@ const DESCRIPTION_LIMIT = 240;
 export type NewsDeliveryState = {
   local: "sent" | "failed" | null;
   bale: "sent" | "failed" | null;
+  /** Mirrored Bale copy (null => Telegram is not configured for this deployment). */
+  telegram?: "sent" | "failed" | null;
   lastSentAt: string | null;
 };
+
+/** Telegram mirror outcome returned next to a manual send. */
+export type TelegramMirrorResult = {
+  attempted: boolean;
+  ok: boolean;
+  status: "sent" | "failed" | "skipped" | "already_sent" | "dry_run" | string;
+  reason: string | null;
+  messageId: string | null;
+  errorMessage: string | null;
+};
+
+/** Human line for the mirror; `null` = nothing worth showing. */
+export function telegramNotice(result: TelegramMirrorResult | null | undefined): string | null {
+  if (!result || !result.attempted) return null;
+  if (result.ok && result.status === "sent") return "ارسال به تلگرام: ✓ موفق";
+  if (result.status === "already_sent") return "ارسال به تلگرام: این خبر پیش‌تر در تلگرام بوده است.";
+  if (result.status === "dry_run") return "ارسال به تلگرام: حالت آزمایشی (شبکه فراخوانی نشد).";
+  if (result.ok) return "ارسال به تلگرام: انجام شد";
+  return `ارسال به تلگرام: ناموفق — ${result.errorMessage ?? "خطای ناشناخته"}`;
+}
 
 export type NewsDeliveryStates = Record<string, NewsDeliveryState>;
 
@@ -133,7 +155,7 @@ function ArticleCard({
       ? { ...initialItem, ...analysisOverlay.patch }
       : initialItem;
 
-  const baseDelivery: NewsDeliveryState = initialDelivery ?? { local: null, bale: null, lastSentAt: null };
+  const baseDelivery: NewsDeliveryState = initialDelivery ?? { local: null, bale: null, telegram: null, lastSentAt: null };
   const delivery: NewsDeliveryState =
     deliveryOverlay && deliveryOverlay.baseLastSentAt === baseDelivery.lastSentAt
       ? { ...baseDelivery, ...deliveryOverlay.patch }
@@ -146,6 +168,7 @@ function ArticleCard({
   const [analyzeCode, setAnalyzeCode] = useState<string | null>(null);
   const [analyzeDetail, setAnalyzeDetail] = useState<string | null>(null);
   const [autoNote, setAutoNote] = useState<string | null>(null);
+  const [telegramNote, setTelegramNote] = useState<string | null>(null);
   const [sendResults, setSendResults] = useState<SendOutcome[] | null>(null);
   const router = useRouter();
 
@@ -244,8 +267,10 @@ function ArticleCard({
         message?: string;
         results?: SendOutcome[];
         code?: string;
+        telegram?: TelegramMirrorResult | null;
       };
 
+      setTelegramNote(telegramNotice(data.telegram));
       if (data.success && data.results) {
         setSendResults(data.results);
         setDeliveryOverlay((prev) => {
@@ -253,6 +278,9 @@ function ArticleCard({
           for (const outcome of data.results ?? []) {
             if (outcome.status === "sent") next[outcome.destination] = "sent";
             else if (outcome.status === "failed") next[outcome.destination] = "failed";
+          }
+          if (data.telegram?.attempted) {
+            next.telegram = data.telegram.ok ? "sent" : data.telegram.status === "failed" ? "failed" : next.telegram;
           }
           return { baseLastSentAt: baseDelivery.lastSentAt, patch: next };
         });
@@ -402,6 +430,12 @@ function ArticleCard({
               <span className="text-muted">ارسال بله:</span>
               <StatusMark status={delivery.bale} />
             </div>
+            {delivery.telegram ? (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted">ارسال تلگرام (آینهٔ بله):</span>
+                <StatusMark status={delivery.telegram} />
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-4 flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -442,6 +476,16 @@ function ArticleCard({
               {sending ? "در حال ارسال..." : delivery.local === "sent" && delivery.bale === "sent" ? "ارسال شد" : "ارسال خبر"}
             </button>
           </div>
+
+          {telegramNote ? (
+            <p
+              className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${
+                telegramNote.includes("ناموفق") ? "bg-warn-soft text-warn-ink" : "bg-ok-soft text-ok-ink"
+              }`}
+            >
+              {telegramNote}
+            </p>
+          ) : null}
 
           {sendResults ? (
             <ul className="mt-4 space-y-2 border-t border-line pt-3">

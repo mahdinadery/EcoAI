@@ -8,7 +8,7 @@ import { AdminPageErrorShell } from "@/components/admin/admin-page-error-shell";
 import { adminKeyForClient, getAdminPageAccess } from "@/lib/admin/page-access";
 import { runWithSchemaRepair } from "@/lib/admin/schema-sync";
 import { getDeliveryDetail } from "@/lib/delivery/publishing";
-import { publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
+import { destinationShortLabel, publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
 import { DeliveryActions } from "@/components/admin/delivery-actions";
 import { Sidebar } from "@/components/sidebar";
 import { StatusBadge } from "@/components/status-badge";
@@ -79,7 +79,7 @@ export default async function AdminDeliveryDetailPage({ params, searchParams }: 
               <h1 className="mt-3 text-2xl font-bold leading-9 tracking-tight text-ink">{article.title}</h1>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
                 <StatusBadge tone={publishingStatusTone(delivery.status)}>{publishStatusLabel(delivery.status)}</StatusBadge>
-                <span>مقصد: {delivery.destination === "bale" ? "بله" : "Local"}</span>
+                <span>مقصد: {destinationShortLabel(delivery.destination)}</span>
                 <span>· شروع‌کننده: {delivery.triggeredBy === "auto" ? "قوانین خودکار" : "دستی"}</span>
               </div>
             </header>

@@ -7,7 +7,9 @@ import { AdminKeyQuerySync } from "@/components/admin/admin-key-query-sync";
 import { adminKeyForClient, getAdminPageAccess } from "@/lib/admin/page-access";
 import { runWithSchemaRepair } from "@/lib/admin/schema-sync";
 import { listAdminDeliveries } from "@/lib/delivery/publishing";
-import { publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
+import { lastTelegramError, telegramDeliveryStats } from "@/lib/delivery/telegram";
+import { getTelegramConfigStatus, getTelegramDeliveryMode, isTelegramMirrorEnabled } from "@/lib/telegram/client";
+import { destinationShortLabel, publishStatusLabel, publishingStatusTone } from "@/lib/delivery/types";
 import { Sidebar } from "@/components/sidebar";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 
@@ -99,6 +101,17 @@ export default async function AdminDeliveriesPage({ searchParams }: PageProps) {
 
   const { rows, total, page, totalPages, stats } = outcome.value;
 
+  // Telegram is a mirror of Bale (src/lib/delivery/telegram.ts); this strip is
+  // how an operator sees whether the copy actually went out.
+  const telegram = {
+    configured: getTelegramConfigStatus().configured,
+    missing: getTelegramConfigStatus().missing,
+    enabled: isTelegramMirrorEnabled(),
+    mode: getTelegramDeliveryMode(),
+    ...(await telegramDeliveryStats()),
+    lastError: await lastTelegramError(),
+  };
+
   return (
     <Shell>
       <AdminKeyQuerySync adminKey={clientKey} />
@@ -119,6 +132,31 @@ export default async function AdminDeliveriesPage({ searchParams }: PageProps) {
         <StatCard label="لغوشده" value={stats.cancelled} tone="muted" />
       </div>
 
+      <section className="mt-4 rounded-xl border border-line bg-surface-2/60 px-4 py-3 text-xs leading-6 text-muted">
+        <span className="font-bold text-ink-soft">آینهٔ تلگرام:</span>{" "}
+        {!telegram.configured ? (
+          <span>
+            تنظیم نشده است. برای فعال شدن، <code className="font-mono">TELEGRAM_BOT_TOKEN</code> و{" "}
+            <code className="font-mono">TELEGRAM_CHAT_ID</code> را در محیط سرور بگذارید (موردها:{" "}
+            {telegram.missing.join("، ")}).
+          </span>
+        ) : !telegram.enabled ? (
+          <span>غیرفعال است (TELEGRAM_MIRROR_ENABLED=false) — پیام‌های بله به تلگرام کپی نمی‌شوند.</span>
+        ) : (
+          <span>
+            {telegram.sent} ارسال موفق · {telegram.failed} ناموفق
+            {telegram.mode === "dry-run" ? " · حالت آزمایشی (بدون شبکه)" : ""}. هر پیام بله خودکار کپی می‌شود؛
+            ردپای آن در همین فهرست با مقصد «تلگرام» است و رکورد ناموفق را می‌توان دوباره تلاش کرد.
+            {telegram.lastError ? (
+              <>
+                <br />
+                <span className="text-danger-ink">آخرین خطا: {telegram.lastError.errorMessage}</span>
+              </>
+            ) : null}
+          </span>
+        )}
+      </section>
+
       <div className="mt-5 flex flex-wrap items-center gap-2">
         {STATUS_TABS.map((tab) => {
           const active = (base.status ?? "") === tab.value;
@@ -135,7 +173,7 @@ export default async function AdminDeliveriesPage({ searchParams }: PageProps) {
           );
         })}
         <span className="mx-2 h-6 w-px bg-track" />
-        {(["bale", "local"] as const).map((destination) => {
+        {(["bale", "telegram", "local"] as const).map((destination) => {
           const active = base.destination === destination;
           return (
             <Link
@@ -145,7 +183,7 @@ export default async function AdminDeliveriesPage({ searchParams }: PageProps) {
               href={`/admin/deliveries${buildQuery({ destination, page: undefined }, base)}`}
               key={destination}
             >
-              {destination === "bale" ? "مقصد: بله" : "مقصد: Local"}
+              {`مقصد: ${destinationShortLabel(destination)}`}
             </Link>
           );
         })}
@@ -200,7 +238,7 @@ export default async function AdminDeliveriesPage({ searchParams }: PageProps) {
                   <td className="p-3 text-xs text-muted">
                     {row.relevanceScore ?? "—"} / {row.noveltyScore ?? "—"}
                   </td>
-                  <td className="p-3 text-xs font-bold text-ink-soft">{row.destination === "bale" ? "بله" : "Local"}</td>
+                  <td className="p-3 text-xs font-bold text-ink-soft">{destinationShortLabel(row.destination)}</td>
                   <td className="p-3">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <StatusBadge tone={publishingStatusTone(row.status)}>{publishStatusLabel(row.status)}</StatusBadge>

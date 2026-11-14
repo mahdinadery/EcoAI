@@ -43,6 +43,15 @@ services:
         sync: false
       - key: BALE_DELIVERY_MODE
         sync: false
+      # --- telegram mirror (copies every Bale message to a Telegram chat) ---
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: TELEGRAM_MIRROR_ENABLED
+        sync: false
+      - key: TELEGRAM_DELIVERY_MODE
+        sync: false
       # --- auto-send policy fallbacks (dashboard config takes precedence) ---
       - key: AUTO_SEND_ENABLED
         sync: false

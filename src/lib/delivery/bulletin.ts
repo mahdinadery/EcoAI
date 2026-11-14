@@ -9,6 +9,13 @@
 /** Upper bound of items packed into one digest (roadmap: 3–5). */
 export const MAX_BULLETIN_ITEMS = 5;
 
+/**
+ * Bale Bot API rejects a single message longer than 4096 characters
+ * (`Bad Request: message is too long`). Keep a safety margin for emoji and
+ * Markdown link overhead.
+ */
+export const BALE_MESSAGE_LIMIT = 4000;
+
 export const BULLETIN_TEMPLATE_VARS = ["title", "date", "intro", "items", "count"] as const;
 export const BULLETIN_ITEM_TEMPLATE_VARS = [
   "number",
@@ -197,6 +204,46 @@ export function pickBulletinItems<
     .slice(0, Math.max(0, Math.min(max, MAX_BULLETIN_ITEMS)));
 }
 
+/**
+ * Splits a long Bale message into chunks that each fit `BALE_MESSAGE_LIMIT`.
+ * Splits on blank-line boundaries so Markdown links (one per line) are never
+ * cut in half. A single overlong line is hard-split as a last resort.
+ */
+export function splitBaleMessage(text: string, limit = BALE_MESSAGE_LIMIT): string[] {
+  const clean = text.trim();
+  if (!clean) return [];
+  if (clean.length <= limit) return [clean];
+
+  const chunks: string[] = [];
+  let current = "";
+  const pushCurrent = () => {
+    if (current.trim()) chunks.push(current.trim());
+    current = "";
+  };
+
+  for (const paragraph of clean.split(/\n{2,}/)) {
+    const block = paragraph.trim();
+    if (!block) continue;
+    // Hard-split a single paragraph that alone exceeds the limit.
+    if (block.length > limit) {
+      pushCurrent();
+      for (let i = 0; i < block.length; i += limit) {
+        chunks.push(block.slice(i, i + limit));
+      }
+      continue;
+    }
+    const candidate = current ? `${current}\n\n${block}` : block;
+    if (candidate.length <= limit) {
+      current = candidate;
+    } else {
+      pushCurrent();
+      current = block;
+    }
+  }
+  pushCurrent();
+  return chunks.length > 0 ? chunks : [clean.slice(0, limit)];
+}
+
 export function buildBulletinMessage(args: {
   /** AI-synthesized intro (null/empty => no intro block). */
   intro: string | null;
@@ -240,7 +287,7 @@ export function buildBulletinMessage(args: {
     if (settings.showSummary && oneLiner) lines.push(escapeMd(oneLiner));
     const why = compact(item.whyItMatters, 240);
     if (settings.showWhy && why) lines.push(`چرا مهم است: ${escapeMd(why)}`);
-    const entities = (item.entityTags ?? []).slice(0, 4).join("، ");
+    const entities = compact((item.entityTags ?? []).slice(0, 4).join("، "), 160);
     if (settings.showEntities && entities) lines.push(`نهادها: ${escapeMd(entities)}`);
     const otherSources = (item.corroborationSources ?? []).slice(0, 3).map((name) => escapeMd(name));
     if (settings.showSources && otherSources.length > 0) {
@@ -251,7 +298,8 @@ export function buildBulletinMessage(args: {
       lines.push("تأییدشده توسط چند منبع ✓");
     }
     lines.push(mdLink("لینک اصلی خبر", item.url));
-    if (item.hashtags) lines.push(escapeMd(item.hashtags));
+    const hashtags = compact(item.hashtags, 160);
+    if (hashtags) lines.push(escapeMd(hashtags));
     const defaultItem = lines.slice(start).join("\n").trim();
     let customItem = settings.itemTemplate.trim()
       ? renderTemplate(settings.itemTemplate, {
@@ -273,7 +321,7 @@ export function buildBulletinMessage(args: {
                 : ""
             : "",
           originalUrl: mdLink("لینک اصلی خبر", item.url),
-          hashtags: escapeMd(item.hashtags ?? ""),
+          hashtags: escapeMd(hashtags),
           importanceScore: item.importanceScore == null ? "—" : String(item.importanceScore),
         })
       : defaultItem;

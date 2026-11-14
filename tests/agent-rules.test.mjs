@@ -8,6 +8,8 @@ import {
   inferDefaultDestinationWhenUnset,
   loadAutoSendRule,
   policyToRule,
+  readAutoSendMaxAgeDays,
+  readAutoSendQueueGraceMinutes,
 } from "../src/lib/agent/rules.ts";
 
 const rule = (overrides) => ({
@@ -227,4 +229,47 @@ test("inferDefaultDestinationWhenUnset promotes implicit local fallback to bale 
     }).destination,
     "local",
   );
+});
+
+test("readAutoSendMaxAgeDays defaults to 7 days and accepts an explicit off switch", () => {
+  assert.equal(readAutoSendMaxAgeDays(undefined), 7);
+  assert.equal(readAutoSendMaxAgeDays(""), 7);
+  assert.equal(readAutoSendMaxAgeDays(" 30 "), 30);
+  assert.equal(readAutoSendMaxAgeDays("0"), 0);
+  assert.equal(readAutoSendMaxAgeDays("all"), 0);
+  assert.equal(readAutoSendMaxAgeDays("همه"), 0);
+  // Garbage never disables the window (fail safe, not fail open).
+  assert.equal(readAutoSendMaxAgeDays("abc"), 7);
+  assert.equal(readAutoSendMaxAgeDays("-5"), 7);
+});
+
+test("readAutoSendQueueGraceMinutes keeps a bounded wait for the analysis queue", () => {
+  assert.equal(readAutoSendQueueGraceMinutes(undefined), 20);
+  assert.equal(readAutoSendQueueGraceMinutes("5"), 5);
+  // 0 = only rows currently in flight may hold newer ones back.
+  assert.equal(readAutoSendQueueGraceMinutes("0"), 0);
+  assert.equal(readAutoSendQueueGraceMinutes("off"), 0);
+  // Never an unbounded wait: garbage and huge values fall back / clamp.
+  assert.equal(readAutoSendQueueGraceMinutes("abc"), 20);
+  assert.equal(readAutoSendQueueGraceMinutes("99999"), 720);
+});
+
+test("a relevant, important and fresh article passes the default auto-send rule", () => {
+  // Mirrors the reported case: importance 85 / relevance 92 / novelty 80 with
+  // an AI recommendation, in a specialist category, and no category whitelist.
+  const check = evaluateArticle(
+    article({
+      importanceScore: 85,
+      relevanceScore: 92,
+      noveltyScore: 80,
+      shouldSend: true,
+      relevanceGrade: null,
+      category: "سیاست‌گذاری و ژئواکونومیک AI",
+      status: "READY_TO_SEND",
+    }),
+    rule({ minImportance: 50, minRelevance: 50, minNovelty: 0, categories: null }),
+  );
+
+  assert.deepEqual(check.reasons, []);
+  assert.equal(check.matches, true);
 });

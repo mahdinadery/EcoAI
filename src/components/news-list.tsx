@@ -7,10 +7,16 @@ import type { NewsListItem } from "@/lib/news/ingest";
 type AutoSendSummary = {
   attempted: boolean;
   enabled: boolean;
+  destination?: string;
+  considered?: number;
   matched: number;
   sent: number;
-  skippedDuplicates: number;
+  skippedDuplicates?: number;
+  skippedReview?: number;
   failed: number;
+  firstError?: string | null;
+  /** Server-computed, article-specific answer to "why was this not sent?". */
+  explanation?: { code: string; label: string; hint?: string } | null;
 };
 
 /** AI fields returned by the analyze endpoint. */
@@ -192,9 +198,20 @@ function ArticleCard({
           // Pull the persisted delivery marks from the server.
           router.refresh();
         } else if (auto && auto.attempted && auto.enabled) {
-          setAutoNote("خبر تحلیل شد اما مشمول قوانین ارسال خودکار نیست.");
+          // Never guess: the server knows the exact gate this article hit.
+          const why = auto.explanation?.label;
+          const hint = auto.explanation?.hint;
+          setAutoNote(
+            why
+              ? `خبر تحلیل شد اما ارسال خودکار نشد: ${why}${hint ? ` — ${hint}` : ""}`
+              : auto.failed > 0
+                ? "ارسال خودکار تلاش شد اما ناموفق بود."
+                : "خبر تحلیل شد اما مشمول قوانین ارسال خودکار نیست.",
+          );
         } else if (auto && !auto.enabled) {
           setAutoNote("ارسال خودکار غیرفعال است.");
+        } else if (auto && auto.firstError) {
+          setAutoNote(auto.firstError);
         }
       } else {
         setAnalyzeError(data.message || "تحلیل هوشمند با شکست مواجه شد.");

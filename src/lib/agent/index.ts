@@ -15,10 +15,11 @@ import { db } from "@/db";
 import { deliveries, news, type NewsRow } from "@/db/schema";
 import { sendNewsDelivery } from "@/lib/delivery";
 import { expandTargets } from "@/lib/delivery/types";
-import { and, asc, eq, inArray, notExists, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notExists, or, sql } from "drizzle-orm";
 import { withArticleQueueLock } from "@/lib/news/queue-lock";
 import { applyActiveSendFloors, resolveAutoSendRule } from "./resolve-rule";
-import { evaluateArticle, type AutoSendRule } from "./rules";
+import { describeRejectionReasons, rejectionReasonLabel } from "./rejection-reasons";
+import { evaluateArticle, readAutoSendMaxAgeDays, readAutoSendQueueGraceMinutes, type AutoSendRule } from "./rules";
 
 export type AutoSendItem = {
   id: string;
@@ -102,11 +103,75 @@ async function findPendingReviewIds(newsIds: string[], rule: AutoSendRule): Prom
   return pending;
 }
 
+/** Arrival-order blockers: rows the analysis queue still has to work through. */
+const PENDING_QUEUE_STATUSES = ["FETCHED", "READY_FOR_AI", "AI_PROCESSING", "FAILED"] as const;
+
+/**
+ * Older rows that still deserve to be published first.
+ *
+ * The rule is "do not overtake an older article the queue is *actively*
+ * working": the row is in flight right now, or a worker touched it within the
+ * grace window. It deliberately does NOT mean "never publish while any older
+ * article is unanalyzed" — with an analysis backlog that always has an older
+ * unanalyzed row, so an unbounded guard silences the channel forever (that is
+ * exactly why relevant, important papers were analyzed but never sent).
+ */
+function queueBlockerSubquery(olderThan: { createdAt: unknown; id: unknown }, graceMinutes: number) {
+  const pendingStatusList = sql.join(
+    PENDING_QUEUE_STATUSES.map((status) => sql`${status}`),
+    sql`, `,
+  );
+  return sql`SELECT 1 FROM news AS older
+     WHERE older.analyzed_at IS NULL
+       AND older.status IN (${pendingStatusList})
+       AND (older.created_at, older.id) < (${olderThan.createdAt}, ${olderThan.id})
+       AND (older.status = 'AI_PROCESSING' OR older.updated_at >= now() - make_interval(mins => ${graceMinutes}::int))`;
+}
+
+/**
+ * How many *actively queued* older rows still stand in front of this article.
+ * Used only by the explanation path, never to decide eligibility twice.
+ */
+async function countQueueBlockers(article: { createdAt: Date; id: string }, graceMinutes: number): Promise<number> {
+  try {
+    const [row] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(news)
+      .where(
+        and(
+          sql`${news.analyzedAt} IS NULL`,
+          inArray(news.status, [...PENDING_QUEUE_STATUSES]),
+          sql`(${news.createdAt}, ${news.id}) < (${article.createdAt}::timestamptz, ${article.id}::uuid)`,
+          sql`(${news.status} = 'AI_PROCESSING' OR ${news.updatedAt} >= now() - make_interval(mins => ${graceMinutes}::int))`,
+        ),
+      );
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function loadCandidates(rule: AutoSendRule, newsIds?: string[], force = false): Promise<NewsRow[]> {
   if (newsIds && newsIds.length === 0) return [];
 
   const targets = expandTargets(rule.destination);
   const batchCap = Math.max(rule.maxItemsPerPass, 25);
+  const graceMinutes = readAutoSendQueueGraceMinutes();
+
+  // Bounded arrival-order guard (see `queueBlockerSubquery`). `force` is the
+  // operator's explicit catch-up and never waits for the analysis queue.
+  const queueGuard = force
+    ? undefined
+    : sql`NOT EXISTS (${queueBlockerSubquery({ createdAt: news.createdAt, id: news.id }, graceMinutes)})`;
+
+  // Auto-publishing must not resurrect an old backlog in one go; the freshness
+  // window keeps the channel current while everything stays in the library for
+  // manual sending. `force` (explicit operator catch-up) ignores it.
+  const maxAgeDays = readAutoSendMaxAgeDays();
+  const withinAgeWindow =
+    force || maxAgeDays <= 0
+      ? undefined
+      : sql`${news.createdAt} >= now() - make_interval(days => ${maxAgeDays}::int)`;
 
   // Exclude duplicates, off-topic rows, and articles already delivered to ALL
   // target destinations (so articles previously sent only to `local` are still
@@ -121,9 +186,8 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[], force = fa
         newsIds ? inArray(news.id, newsIds) : sql`true`,
         sql`${news.analyzedAt} IS NOT NULL AND coalesce(${news.summary}, '') <> ''`,
         sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
-        // Do not publish a later article while an earlier one is still awaiting
-        // analysis or retry. publishedAt is not an arrival timestamp.
-        sql`NOT EXISTS (SELECT 1 FROM news AS older WHERE older.analyzed_at IS NULL AND older.status IN ('FETCHED', 'READY_FOR_AI', 'AI_PROCESSING', 'FAILED') AND (older.created_at, older.id) < (${news.createdAt}, ${news.id}))`,
+        withinAgeWindow,
+        queueGuard,
         // Avoid head-of-line starvation by rows that cannot match the rule.
         force ? sql`true` : and(
           sql`${news.relevanceGrade} IS DISTINCT FROM 'rejected'`,
@@ -162,6 +226,126 @@ async function loadCandidates(rule: AutoSendRule, newsIds?: string[], force = fa
     )
     .orderBy(asc(news.createdAt), asc(news.id))
     .limit(batchCap);
+}
+
+/**
+ * Why was THIS analyzed article not sent automatically?
+ *
+ * `runAutoDeliveryPass` only reports aggregate counters, so the UI had to fall
+ * back to the catch-all "this news is not covered by the auto-send rules"
+ * message — even when the article actually passed every threshold and something
+ * else (an open manual-review candidate, an already delivered destination, a
+ * stale backlog, the queue guard) held it back. This function answers with the
+ * real, single reason. It is deliberately read-only and never throws.
+ */
+export type AutoSendSkip = {
+  code: string;
+  /** Persian, operator-facing explanation. */
+  label: string;
+  /** Optional next step for the operator. */
+  hint?: string;
+};
+
+export async function explainAutoSendSkip(newsId: string): Promise<AutoSendSkip | null> {
+  try {
+    const rule = await resolveAutoSendRule();
+    const [article] = await db.select().from(news).where(eq(news.id, newsId)).limit(1);
+    if (!article) return null;
+
+    if (!article.analyzedAt || !article.summary?.trim()) {
+      return { code: "not_analyzed", label: rejectionReasonLabel("not_analyzed") };
+    }
+
+    const targets = expandTargets(rule.destination);
+    if (rule.destination === "local") {
+      return {
+        code: "destination_local",
+        label: "مقصد ارسال خودکار روی «صندوق محلی» است، نه بله.",
+        hint: "در کارت زمان‌بندی یا AUTO_SEND_DESTINATION مقصد را روی «بله» بگذارید.",
+      };
+    }
+
+    const sentRows = await db
+      .select({ destination: deliveries.destination })
+      .from(deliveries)
+      .where(
+        and(
+          eq(deliveries.newsId, newsId),
+          eq(deliveries.status, "sent"),
+          inArray(deliveries.destination, targets),
+        ),
+      );
+    if (new Set(sentRows.map((row) => row.destination)).size >= targets.length) {
+      return {
+        code: "already_sent",
+        label: "این خبر پیش‌تر به مقصد انتخابی ارسال شده است (ارسال تکراری انجام نمی‌شود).",
+      };
+    }
+
+    const [openCandidate] = await db
+      .select({ status: deliveries.status, createdAt: deliveries.createdAt })
+      .from(deliveries)
+      .where(
+        and(
+          eq(deliveries.newsId, newsId),
+          inArray(deliveries.destination, targets),
+          sql`${deliveries.status} IN ('pending_approval', 'approved')`,
+          // Mirrors `loadCandidates`: only a RECENT open candidate defers the
+          // automatic pass; an older stale one must not mute the channel.
+          sql`${deliveries.createdAt} >= now() - interval '12 hours'`,
+        ),
+      )
+      .orderBy(desc(deliveries.createdAt))
+      .limit(1);
+    if (openCandidate) {
+      return {
+        code: "pending_manual_review",
+        label:
+          openCandidate.status === "approved"
+            ? "این خبر یک نامزد «تأییدشده» دارد که هنوز ارسال نشده؛ ارسال خودکار وارد رقابت با آن نمی‌شود."
+            : "این خبر در صف «انتظار تأیید دستی» است؛ ارسال خودکار عمداً منتظر تصمیم شما می‌ماند.",
+        hint: "از «مدیریت ارسال‌ها» این نامزد را تأیید و ارسال کنید (یا رد کنید تا دوباره مشمول ارسال خودکار شود).",
+      };
+    }
+
+    const check = evaluateArticle(article, rule);
+    if (!check.matches) {
+      return {
+        code: check.reasons[0] ?? "rule_rejected",
+        label: `حد نصاب‌های ارسال برقرار نیست: ${describeRejectionReasons(check.reasons)} (حداقل اهمیت ${rule.minImportance}، ارتباط ${rule.minRelevance}، تازگی ${rule.minNovelty}).`,
+      };
+    }
+
+    const maxAgeDays = readAutoSendMaxAgeDays();
+    if (maxAgeDays > 0) {
+      const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+      if (article.createdAt < cutoff) {
+        return {
+          code: "older_than_auto_window",
+          label: `این خبر قدیمی‌تر از پنجرهٔ ${maxAgeDays} روزهٔ ارسال خودکار است تا انباشت قدیمی به کانال نرود.`,
+          hint: "برای ارسال همین خبر، دستی «ارسال» را بزنید یا AUTO_SEND_MAX_AGE_DAYS را تغییر دهید.",
+        };
+      }
+    }
+
+    const waiting = await countQueueBlockers(article, readAutoSendQueueGraceMinutes());
+    if (waiting > 0) {
+      return {
+        code: "queue_waiting",
+        label: `${waiting} خبر قدیمی‌تر همین حالا در حال تحلیل هستند و صف به ترتیب ورود جلو می‌رود؛ این خبر در نوبت بعدی ارسال می‌شود.`,
+        hint: "با «تحلیل دسته‌ای صف» یا اجرای زمان‌بندی‌شده، سرِ صف باز می‌شود.",
+      };
+    }
+
+    return {
+      code: "not_picked_this_pass",
+      label: "خبر واجد شرایط است اما در این نوبت انتخاب نشد (ظرفیت هر اجرا پر شده بود)؛ نوبت بعدی آن را می‌فرستد.",
+      hint: `حداکثر ${rule.maxItemsPerPass} خبر در هر اجرا ارسال می‌شود.`,
+    };
+  } catch (error) {
+    console.error("[agent] auto-send explanation failed:", String(error).slice(0, 160));
+    return null;
+  }
 }
 
 /**
@@ -219,7 +403,15 @@ export async function runAutoDeliveryPass(
     items: [],
   };
 
+  // Real burst control: `maxItemsPerPass` used to only size the candidate batch
+  // (with a floor of 25), so a single pass could push far more messages than the
+  // operator configured — which matters exactly when a blocked backlog is
+  // released at once.
+  const maxSendsPerPass = Math.max(1, Math.min(100, Math.round(rule.maxItemsPerPass) || 20));
+
   for (const article of candidates) {
+    if (result.matched >= maxSendsPerPass) break;
+
     if (pendingReviewIds.has(article.id)) {
       result.skippedReview += 1;
       result.items.push({

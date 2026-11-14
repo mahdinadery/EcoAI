@@ -14,6 +14,12 @@ export const REJECTION_REASON_LABELS: Record<string, string> = {
   grader_rejected: "ارزیاب دوم: واقعاً مرتبط نیست (گریدر دومرحله‌ای)",
   category_excluded: "دستهٔ خبر در فهرست مجاز نیست",
   pending_manual_review: "در انتظار تأیید دستی است",
+  // Codes produced by `explainAutoSendSkip` (src/lib/agent/index.ts).
+  already_sent: "قبلاً به این مقصد ارسال شده است",
+  destination_local: "مقصد ارسال خودکار روی صندوق محلی (Local) است",
+  older_than_auto_window: "خارج از پنجرهٔ سنی ارسال خودکار است",
+  queue_waiting: "در انتظار باز شدن سرِ صف تحلیل است",
+  not_picked_this_pass: "در این نوبت انتخاب نشد (ظرفیت هر اجرا پر است)",
 };
 
 /** Unknown codes stay visible (never silently swallowed) — useful for debugging. */

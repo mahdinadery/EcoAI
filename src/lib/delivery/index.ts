@@ -14,6 +14,7 @@ import { deliveries, news, type NewsRow } from "@/db/schema";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { deliverToBale } from "./bale";
 import { deliverToLocal } from "./local";
+import { mirrorToTelegram, type TelegramMirrorOutcome } from "./telegram";
 import { buildNewsMessage, type MessageExtras } from "./message";
 import { renderPublishingMessage } from "./template";
 import { getActiveAiConfig } from "@/lib/ai/config-service";
@@ -88,11 +89,27 @@ async function deliverToOne(
   destination: DeliveryDestination,
   message: string,
   trigger: SendTrigger,
-): Promise<DestinationResult> {
+): Promise<{ result: DestinationResult; telegram: TelegramMirrorOutcome | null }> {
+  // Telegram mirrors Bale only; it is never a selectable destination of its own.
+  const mirror = async () =>
+    destination === "bale"
+      ? await mirrorToTelegram({
+          text: message,
+          newsId: article.id,
+          trigger,
+          buttonUrl: article.url?.trim() || null,
+        })
+      : null;
+
   // Duplicate protection: a confirmed prior delivery to this destination blocks a
   // second one. Failed attempts stay retryable on purpose.
   if (await findSuccessfulDelivery(article.id, destination)) {
-    return { destination, status: "already_sent", ok: false, errorMessage: ALREADY_SENT_MESSAGE };
+    // Bale already has this article. A missing Telegram copy is still backfilled
+    // here, so a Telegram outage can never permanently drop the news.
+    return {
+      result: { destination, status: "already_sent", ok: false, errorMessage: ALREADY_SENT_MESSAGE },
+      telegram: await mirror(),
+    };
   }
 
   if (trigger === "auto" && destination === "bale") {
@@ -104,7 +121,10 @@ async function deliverToOne(
     // A plain "could not reach" network error means the request never left,
     // so it stays retryable.
     if (last?.status === "failed" && /timed out|timeout|not valid json/i.test(last.error ?? "")) {
-      return { destination, status: "failed", ok: false, errorMessage: "نتیجهٔ ارسال قبلی نامشخص است؛ پیش از تلاش مجدد کانال بله را بررسی کنید." };
+      return {
+        result: { destination, status: "failed", ok: false, errorMessage: "نتیجهٔ ارسال قبلی نامشخص است؛ پیش از تلاش مجدد کانال بله را بررسی کنید." },
+        telegram: null,
+      };
     }
   }
 
@@ -139,14 +159,23 @@ async function deliverToOne(
     // Persistence problems are reported, but never rewrite the provider's verdict.
     const detail = error instanceof Error ? error.message : String(error);
     return {
-      destination,
-      status,
-      ok: outcome.ok,
-      errorMessage: `${outcome.errorMessage ?? "Delivery recorded, but the log insert failed."} | log: ${detail.slice(0, 120)}`,
+      result: {
+        destination,
+        status,
+        ok: outcome.ok,
+        errorMessage: `${outcome.errorMessage ?? "Delivery recorded, but the log insert failed."} | log: ${detail.slice(0, 120)}`,
+      },
+      telegram: null,
     };
   }
 
-  return { destination, status, ok: outcome.ok, errorMessage: outcome.errorMessage };
+  // Mirrored after the Bale attempt so the Telegram result can never rewrite the
+  // Bale verdict — and a Telegram failure never lands in `results` (the
+  // auto-send queue must not break on it).
+  return {
+    result: { destination, status, ok: outcome.ok, errorMessage: outcome.errorMessage },
+    telegram: await mirror(),
+  };
 }
 
 /**
@@ -233,11 +262,18 @@ export async function sendNewsDelivery(
 
   // Independent per-destination attempts.
   const trigger: SendTrigger = options.trigger ?? "manual";
-  const results = await Promise.all(
+  const attempts = await Promise.all(
     destinations.map((destination) => deliverToOne(article!, destination, message, trigger)),
   );
 
-  return { ok: true, message, results };
+  return {
+    ok: true,
+    message,
+    results: attempts.map((attempt) => attempt.result),
+    // Reported to humans (dashboard / news list) but kept out of `results`, so
+    // an automatic pass never treats a Telegram problem as a failed delivery.
+    telegram: attempts.map((attempt) => attempt.telegram).find((entry) => entry?.attempted) ?? null,
+  };
 }
 
 export type BulletinSendResult = {
@@ -245,6 +281,8 @@ export type BulletinSendResult = {
   results: DestinationResult[];
   /** Per-news delivery rows written (newsId x destination on success). */
   recordedFor: string[];
+  /** Independent Telegram mirror of the same digest (never affects `ok`). */
+  telegram?: TelegramMirrorOutcome | null;
 };
 
 /**
@@ -273,6 +311,7 @@ export async function sendBulletinDelivery(params: {
 
   const results: DestinationResult[] = [];
   const recordedFor: string[] = [];
+  let telegram: TelegramMirrorOutcome | null = null;
 
   for (const destination of destinations) {
     let outcome: ProviderOutcome;
@@ -283,6 +322,12 @@ export async function sendBulletinDelivery(params: {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       outcome = { ok: false, providerMessageId: null, errorMessage: detail.slice(0, 200) };
+    }
+
+    if (destination === "bale") {
+      // One digest message, no per-item ledger row: the digest covers many news
+      // items, and the outbox already keeps a record of the Telegram copy.
+      telegram = await mirrorToTelegram({ text, newsId: null, trigger, buttonUrl: null });
     }
 
     const status: DeliveryStatus = outcome.ok ? "sent" : "failed";
@@ -315,13 +360,21 @@ export async function sendBulletinDelivery(params: {
     }
   }
 
-  // Local success is not confirmation that Bale received the bulletin.
-  return { ok: results.length > 0 && results.every((result) => result.ok), results, recordedFor };
+  // Local success is not confirmation that Bale received the bulletin — and a
+  // Telegram mirror result never changes it.
+  return {
+    ok: results.length > 0 && results.every((result) => result.ok),
+    results,
+    recordedFor,
+    telegram,
+  };
 }
 
 export type DeliveryState = {
   local: "sent" | "failed" | null;
   bale: "sent" | "failed" | null;
+  /** Mirrored Bale copy (see src/lib/delivery/telegram.ts). */
+  telegram: "sent" | "failed" | null;
   lastSentAt: string | null;
 };
 
@@ -334,7 +387,7 @@ export async function getDeliveryStates(newsIds: string[]): Promise<Record<strin
   if (newsIds.length === 0) return states;
 
   for (const id of newsIds) {
-    states[id] = { local: null, bale: null, lastSentAt: null };
+    states[id] = { local: null, bale: null, telegram: null, lastSentAt: null };
   }
 
   type DeliveryStateRow = {
@@ -381,8 +434,9 @@ export async function getDeliveryStates(newsIds: string[]): Promise<Record<strin
     if (!state) continue;
     if (bucket.local) state.local = bucket.local.status as "sent" | "failed";
     if (bucket.bale) state.bale = bucket.bale.status as "sent" | "failed";
+    if (bucket.telegram) state.telegram = bucket.telegram.status as "sent" | "failed";
 
-    const times = [bucket.local?.sentAt, bucket.bale?.sentAt].filter(Boolean) as Date[];
+    const times = [bucket.local?.sentAt, bucket.bale?.sentAt, bucket.telegram?.sentAt].filter(Boolean) as Date[];
     if (times.length > 0) {
       state.lastSentAt = times.sort((a, b) => b.getTime() - a.getTime())[0].toISOString();
     }

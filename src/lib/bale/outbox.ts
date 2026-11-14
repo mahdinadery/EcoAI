@@ -8,6 +8,7 @@
 
 import { db } from "@/db";
 import { deliveries } from "@/db/schema";
+import { destinationLabel } from "@/lib/delivery/types";
 import { stripLegacyTitleFlag } from "@/lib/delivery/message";
 import { desc, inArray } from "drizzle-orm";
 
@@ -87,7 +88,7 @@ export async function listOutboxEntries(): Promise<OutboxEntry[]> {
   }
 
   const dbEntries: OutboxEntry[] = dbRows.map((row) => {
-    const destLabel = row.destination === "bale" ? "بله (Bale)" : "صندوق محلی (Local)";
+    const destLabel = destinationLabel(row.destination);
     const triggerLabel =
       row.triggeredBy === "auto" ? "ارسال خودکار 🤖" : "ارسال دستی 👤";
     const channel = `${destLabel} · ${triggerLabel}`;

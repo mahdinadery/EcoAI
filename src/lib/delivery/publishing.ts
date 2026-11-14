@@ -22,12 +22,13 @@ import { aiAnalyses, deliveries, deliveryEvents, news } from "@/db/schema";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { getActiveAiConfig } from "@/lib/ai/config-service";
 import { deliverToBale } from "./bale";
+import { deliverToTelegram, mirrorToTelegram } from "./telegram";
 import { deliverToLocal } from "./local";
 import { stripLegacyTitleFlag } from "./message";
 import { renderPublishingMessage } from "./template";
 import { loadMessageExtras } from "./index";
 import type { DeliveryDestination } from "./types";
-import { isOpenCandidate } from "./types";
+import { isPublishingDestination, isOpenCandidate } from "./types";
 
 export type DeliveryAction =
   | "created"
@@ -341,7 +342,8 @@ export async function sendDelivery(
     return { ok: false, code: "empty_message", message: "متن پیام این رکورد خالی است؛ ابتدا آن را ویرایش کنید." };
   }
 
-  if (!isDeliveryDestination(delivery.destination)) {
+  // `telegram` rows are mirror records, but they stay actionable (retry).
+  if (!isPublishingDestination(delivery.destination)) {
     return { ok: false, code: "invalid_destination", message: "مقصد این رکورد نامعتبر است." };
   }
 
@@ -366,10 +368,26 @@ export async function sendDelivery(
   const text = stripLegacyTitleFlag(delivery.message);
   let outcome: { ok: boolean; providerMessageId: string | null; errorMessage: string | null };
   try {
-    outcome = delivery.destination === "bale" ? await deliverToBale(text) : await deliverToLocal(text);
+    outcome =
+      delivery.destination === "bale"
+        ? await deliverToBale(text)
+        : delivery.destination === "telegram"
+          ? await deliverToTelegram(text)
+          : await deliverToLocal(text);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     outcome = { ok: false, providerMessageId: null, errorMessage: detail.slice(0, 200) };
+  }
+
+  // Mirror the published Bale message to Telegram (independent by design: the
+  // candidate row keeps the Bale provider's verdict, and a Telegram problem only
+  // shows up as its own ledger row).
+  let telegramNote = "";
+  if (delivery.destination === "bale") {
+    const mirror = await mirrorToTelegram({ text, newsId: delivery.newsId, trigger: "manual" });
+    if (mirror.attempted && !mirror.ok && mirror.status !== "already_sent" && mirror.status !== "dry_run") {
+      telegramNote = ` — تلگرام ناموفق: ${(mirror.errorMessage ?? "خطای ناشناخته").slice(0, 120)}`;
+    }
   }
 
   const now = new Date();
@@ -395,7 +413,12 @@ export async function sendDelivery(
       // bookkeeping only
     }
 
-    return { ok: true, deliveryId: id, status: "sent", message: outcome.providerMessageId ? `ارسال شد (messageId: ${outcome.providerMessageId})` : "ارسال شد." };
+    return {
+      ok: true,
+      deliveryId: id,
+      status: "sent",
+      message: `${outcome.providerMessageId ? `ارسال شد (messageId: ${outcome.providerMessageId})` : "ارسال شد."}${telegramNote}`,
+    };
   }
 
   await db
@@ -410,7 +433,12 @@ export async function sendDelivery(
 
   await logEvent(id, "failed", outcome.errorMessage ?? null, actor);
 
-  return { ok: false, code: "send_failed", message: "ارسال ناموفق بود.", detail: outcome.errorMessage ?? null };
+  return {
+    ok: false,
+    code: "send_failed",
+    message: `ارسال ناموفق بود.${telegramNote}`,
+    detail: outcome.errorMessage ?? null,
+  };
 }
 
 /**

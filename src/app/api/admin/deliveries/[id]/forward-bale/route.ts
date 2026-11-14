@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { deliveries } from "@/db/schema";
 import { deliverToBale } from "@/lib/delivery/bale";
+import { mirrorToTelegram } from "@/lib/delivery/telegram";
 import { and, eq, sql } from "drizzle-orm";
 import { accessDenied, resolveId, type RouteContext } from "../../_shared";
 
@@ -26,6 +27,9 @@ export async function POST(request: Request, context: RouteContext) {
       if (sent) return { success: false, message: "این متن قبلاً به بله ارسال شده است." };
       const rows = await tx.select({ newsId: deliveries.newsId }).from(deliveries).where(and(eq(deliveries.destination, "local"), eq(deliveries.status, "sent"), eq(deliveries.message, message)));
       const outcome = await deliverToBale(message);
+      // Same mirror rule as every other Bale send. No `newsId` here: the text was
+      // forwarded from the outbox, so its own ledger rows stay untouched.
+      await mirrorToTelegram({ text: message, newsId: null, trigger: "manual" });
       const ids = outcome.ok ? [...new Set(rows.map((row) => row.newsId))] : [original.newsId];
       await tx.insert(deliveries).values(ids.map((newsId) => ({ newsId, destination: "bale", status: outcome.ok ? "sent" : "failed", triggeredBy: "manual", message, errorMessage: outcome.errorMessage, providerMessageId: outcome.providerMessageId, sentAt: outcome.ok ? new Date() : null })));
       return outcome.ok

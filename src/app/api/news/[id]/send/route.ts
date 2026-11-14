@@ -64,6 +64,9 @@ export async function POST(request: Request, routeContext: RouteParams) {
     return Response.json({
       success: true,
       message: result.message,
+      // Independent Telegram mirror of the Bale copy (null when Telegram is not
+      // configured, or when the target did not include Bale).
+      telegram: result.telegram ?? null,
       results: result.results.map((entry) => ({
         destination: entry.destination,
         status: entry.status,

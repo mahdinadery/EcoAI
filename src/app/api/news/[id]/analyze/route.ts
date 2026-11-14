@@ -44,9 +44,11 @@ export async function POST(
     const result = await analyzeArticle(id, { force });
 
     if (result.ok) {
-      // Auto-delivery follows the shared arrival-order queue rather than
-      // allowing this manually analyzed article to jump older unsent papers.
-      const autoSend = await maybeRunAutoSend();
+      // Auto-delivery runs as a normal queue pass (it never overtakes an older
+      // article the queue is actively working on). `explainFor` makes this
+      // response carry the REAL reason when the article is not delivered,
+      // instead of the old catch-all "not covered by the auto-send rules".
+      const autoSend = await maybeRunAutoSend(undefined, { explainFor: id });
 
       // Milestone 8: when the AI recommends sending, open a publishing CANDIDATE
       // for human approval. This never sends anything — and any failure here is

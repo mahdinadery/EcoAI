@@ -22,6 +22,12 @@ export type ArticleQueueResult = {
  * article blocks newer ones, so retry never silently changes the arrival order.
  * Limits bound each request, not the persistent queue. Manual individual actions
  * remain explicit operator overrides.
+ *
+ * Note: this strict order applies to *analysis*. Delivery only waits for older
+ * rows the queue is actively working on (see `queueBlockerSubquery` in
+ * src/lib/agent/index.ts), because an unbounded wait turns one stuck head row
+ * into a permanently silent channel: analyzed-and-qualifying news would never
+ * be sent while any older article is still unanalyzed.
  */
 export async function drainArticleQueue(options: {
   limit: number;
@@ -40,8 +46,8 @@ export async function drainArticleQueue(options: {
     await recoverStaleProcessing();
 
     while (Date.now() - started < options.maxDurationMs) {
-      // Flush older analyzed papers before selecting the next arrival. The
-      // delivery selector stops at the earliest unresolved analysis.
+      // Flush older analyzed papers before selecting the next arrival, so the
+      // channel catches up on the backlog head first.
       const pass = await runAutoDeliveryPass({ rule, queueLockHeld: true });
       result.send.enabled = pass.enabled;
       result.send.destination = pass.destination;

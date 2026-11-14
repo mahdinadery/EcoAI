@@ -1,4 +1,4 @@
-import { runAutoDeliveryPass } from "./index";
+import { explainAutoSendSkip, runAutoDeliveryPass, type AutoSendSkip } from "./index";
 import { describeRejectionReasons } from "./rejection-reasons";
 import { resolveAutoSendRule } from "./resolve-rule";
 
@@ -23,6 +23,11 @@ export type AutoSendSummary = {
   heldForBulletin?: boolean;
   firstError?: string | null;
   firstRejectionReason?: string | null;
+  /**
+   * Precise, article-scoped answer to "why was nothing sent?" — only computed
+   * when the caller names the article it cares about (`explainFor`).
+   */
+  explanation?: AutoSendSkip | null;
 };
 
 function disabled(destination = "", enabled = true): AutoSendSummary {
@@ -39,18 +44,32 @@ function disabled(destination = "", enabled = true): AutoSendSummary {
     heldForBulletin: false,
     firstError: null,
     firstRejectionReason: null,
+    explanation: null,
   };
 }
 
-export async function maybeRunAutoSend(newsIds?: string[], options: { queueLockHeld?: boolean } = {}): Promise<AutoSendSummary> {
+export async function maybeRunAutoSend(
+  newsIds?: string[],
+  options: { queueLockHeld?: boolean; /** explain why THIS article was not delivered */ explainFor?: string } = {},
+): Promise<AutoSendSummary> {
   try {
     const rule = await resolveAutoSendRule();
     const result = await runAutoDeliveryPass({ newsIds, rule, queueLockHeld: options.queueLockHeld });
-    if (result.busy) return { ...disabled(rule.destination, rule.enabled), firstError: "صف در حال پردازش است؛ نوبت بعد دوباره تلاش می‌شود." };
+    if (result.busy)
+      return {
+        ...disabled(rule.destination, rule.enabled),
+        firstError: "صف در حال پردازش است؛ نوبت بعد دوباره تلاش می‌شود.",
+      };
     const firstFailed = result.items.find((item) => item.outcome === "failed" && item.errors?.length);
     const firstRejected = result.items.find(
       (item) => (item.outcome === "not_matched" || item.outcome === "skipped_review") && item.reasons?.length,
     );
+    // Nothing moved and the caller cares about one concrete article: ask the
+    // engine why, so the UI never has to guess with a catch-all sentence.
+    const explanation =
+      options.explainFor && result.matched === 0 && result.enabled && result.failed === 0
+        ? await explainAutoSendSkip(options.explainFor)
+        : null;
 
     return {
       attempted: true,
@@ -65,6 +84,7 @@ export async function maybeRunAutoSend(newsIds?: string[], options: { queueLockH
       heldForBulletin: false,
       firstError: firstFailed?.errors?.[0] ?? null,
       firstRejectionReason: firstRejected ? describeRejectionReasons(firstRejected.reasons) : null,
+      explanation,
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

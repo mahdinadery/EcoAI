@@ -36,6 +36,8 @@ export const AUTO_SEND_ENV = {
   requireAi: "AUTO_SEND_REQUIRE_AI_RECOMMENDATION",
   categories: "AUTO_SEND_CATEGORIES",
   maxItems: "AUTO_SEND_MAX_ITEMS",
+  maxAgeDays: "AUTO_SEND_MAX_AGE_DAYS",
+  queueGraceMinutes: "AUTO_SEND_QUEUE_GRACE_MINUTES",
 } as const;
 
 /** Safe defaults: Local-only, sensible importance/relevance threshold (50), and sends analyzed news matching criteria. */
@@ -47,6 +49,10 @@ const DEFAULTS = {
   minNovelty: 0,
   requireAiRecommendation: false,
   maxItemsPerPass: 20,
+  /** Auto-delivery only publishes articles received this recently (0 = no limit). */
+  maxAgeDays: 7,
+  /** How long an older unanalyzed row may delay newer ones (minutes). */
+  queueGraceMinutes: 20,
 };
 
 function readBool(name: string, fallback: boolean): boolean {
@@ -78,6 +84,42 @@ function readCategories(): string[] | null {
     .map((item) => item.trim())
     .filter(Boolean);
   return list.length > 0 ? list : null;
+}
+
+/**
+ * How long an older, still-unanalyzed row may hold NEWER analyzed articles
+ * back. A row only counts as "the queue is working on it" while it is being
+ * analyzed or was touched this recently; a stalled or abandoned head must
+ * never mute the channel (see `queueBlockerSubquery`).
+ */
+export function readAutoSendQueueGraceMinutes(
+  raw: string | undefined = process.env[AUTO_SEND_ENV.queueGraceMinutes],
+): number {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (!value) return DEFAULTS.queueGraceMinutes;
+  if (["off", "none", "0", "بدون_انتظار"].includes(value)) return 0;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULTS.queueGraceMinutes;
+  return Math.min(parsed, 720);
+}
+
+/**
+ * How many days back automatic publishing is allowed to reach.
+ *
+ * An unblocked pass walks the *oldest* unsent articles first, so an analysis
+ * backlog that never fully drains would otherwise flood the channel with
+ * month-old news the day the queue is unblocked. Manual, explicit sends
+ * (`force`) and the dashboard's per-article send are never limited by this.
+ *
+ * `0`, `all`, `none` or `همه` disable the window (publish at any age).
+ */
+export function readAutoSendMaxAgeDays(raw: string | undefined = process.env[AUTO_SEND_ENV.maxAgeDays]): number {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (!value) return DEFAULTS.maxAgeDays;
+  if (["0", "all", "none", "off", "همه", "بدون_محدودیت"].includes(value)) return 0;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULTS.maxAgeDays;
+  return Math.min(parsed, 3650);
 }
 
 export function loadAutoSendRule(): AutoSendRule {
@@ -240,6 +282,12 @@ export function describeRule(rule: AutoSendRule): string[] {
   ];
 
   if (rule.minNovelty > 0) lines.push(`حداقل تازگی: ${rule.minNovelty}٪`);
+  const maxAgeDays = readAutoSendMaxAgeDays();
+  lines.push(
+    maxAgeDays > 0
+      ? `پنجرهٔ سنی ارسال خودکار: فقط خبرهای حداکثر ${maxAgeDays} روز اخیر`
+      : "پنجرهٔ سنی ارسال خودکار: بدون محدودیت",
+  );
   if (rule.requireAiRecommendation) lines.push("الزام تأیید هوش مصنوعی (shouldSend)");
   if (rule.categories) lines.push(`دسته‌های مجاز: ${rule.categories.join("، ")}`);
 

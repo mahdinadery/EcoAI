@@ -1,5 +1,10 @@
 import { getBaleConfigStatus } from "@/lib/bale/client";
-import { describeRule, resolveAutoSendRule } from "@/lib/agent";
+import {
+  describeRule,
+  readAutoSendMaxAgeDays,
+  readAutoSendQueueGraceMinutes,
+  resolveAutoSendRule,
+} from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +32,13 @@ export async function GET() {
     requireAiRecommendation: rule.requireAiRecommendation,
     categories: rule.categories,
     maxItemsPerPass: rule.maxItemsPerPass,
+    // Queue-safety knobs (src/lib/agent/index.ts): how far back automatic
+    // publishing may reach, and how long an older unanalyzed row may delay a
+    // newer one. 0 disables the age window / leaves only in-flight rows waiting.
+    autoPublishWindow: {
+      maxAgeDays: readAutoSendMaxAgeDays(),
+      queueGraceMinutes: readAutoSendQueueGraceMinutes(),
+    },
     description: describeRule(rule),
     destinationsReady: {
       local: true,

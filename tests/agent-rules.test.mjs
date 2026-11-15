@@ -231,16 +231,18 @@ test("inferDefaultDestinationWhenUnset promotes implicit local fallback to bale 
   );
 });
 
-test("readAutoSendMaxAgeDays defaults to 7 days and accepts an explicit off switch", () => {
-  assert.equal(readAutoSendMaxAgeDays(undefined), 7);
-  assert.equal(readAutoSendMaxAgeDays(""), 7);
-  assert.equal(readAutoSendMaxAgeDays(" 30 "), 30);
+test("readAutoSendMaxAgeDays defaults to 30 days and accepts an explicit off switch", () => {
+  assert.equal(readAutoSendMaxAgeDays(undefined), 30);
+  assert.equal(readAutoSendMaxAgeDays(""), 30);
+  // Anything narrower or wider is honored verbatim (7 was the old default).
+  assert.equal(readAutoSendMaxAgeDays(" 7 "), 7);
+  assert.equal(readAutoSendMaxAgeDays("365"), 365);
   assert.equal(readAutoSendMaxAgeDays("0"), 0);
   assert.equal(readAutoSendMaxAgeDays("all"), 0);
   assert.equal(readAutoSendMaxAgeDays("همه"), 0);
   // Garbage never disables the window (fail safe, not fail open).
-  assert.equal(readAutoSendMaxAgeDays("abc"), 7);
-  assert.equal(readAutoSendMaxAgeDays("-5"), 7);
+  assert.equal(readAutoSendMaxAgeDays("abc"), 30);
+  assert.equal(readAutoSendMaxAgeDays("-5"), 30);
 });
 
 test("readAutoSendQueueGraceMinutes keeps a bounded wait for the analysis queue", () => {
@@ -252,6 +254,16 @@ test("readAutoSendQueueGraceMinutes keeps a bounded wait for the analysis queue"
   // Never an unbounded wait: garbage and huge values fall back / clamp.
   assert.equal(readAutoSendQueueGraceMinutes("abc"), 20);
   assert.equal(readAutoSendQueueGraceMinutes("99999"), 720);
+});
+
+test("a 3-week-old paper is inside the default window, a 2-month-old one is not", () => {
+  const maxAgeDays = readAutoSendMaxAgeDays(undefined);
+  const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  // The reported case: received yesterday, so the age gate must never fire.
+  assert.ok(daysAgo(21) >= new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000));
+  // Older than the window stays in the library for a manual send instead.
+  assert.ok(daysAgo(60) < new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000));
 });
 
 test("a relevant, important and fresh article passes the default auto-send rule", () => {

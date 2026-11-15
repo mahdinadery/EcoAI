@@ -49,8 +49,12 @@ const DEFAULTS = {
   minNovelty: 0,
   requireAiRecommendation: false,
   maxItemsPerPass: 20,
-  /** Auto-delivery only publishes articles received this recently (0 = no limit). */
-  maxAgeDays: 7,
+  /**
+   * Auto-delivery only publishes articles received this recently (0 = no limit).
+   * 30 days keeps a month of research papers sendable while a blocked or slow
+   * analysis queue drains, without letting older archives reach the channel.
+   */
+  maxAgeDays: 30,
   /** How long an older unanalyzed row may delay newer ones (minutes). */
   queueGraceMinutes: 20,
 };
@@ -104,12 +108,14 @@ export function readAutoSendQueueGraceMinutes(
 }
 
 /**
- * How many days back automatic publishing is allowed to reach.
+ * How many days back automatic publishing is allowed to reach (default 30).
  *
  * An unblocked pass walks the *oldest* unsent articles first, so an analysis
  * backlog that never fully drains would otherwise flood the channel with
- * month-old news the day the queue is unblocked. Manual, explicit sends
- * (`force`) and the dashboard's per-article send are never limited by this.
+ * long-obsolete news the day the queue is unblocked. Thirty days is wide enough
+ * that a slow queue (or a few stalled AI retries) never costs a real story, and
+ * still bounds the catch-up burst. Manual, explicit sends (`force`) and the
+ * dashboard's per-article send are never limited by this.
  *
  * `0`, `all`, `none` or `همه` disable the window (publish at any age).
  */

@@ -323,7 +323,7 @@ export async function explainAutoSendSkip(newsId: string): Promise<AutoSendSkip 
         return {
           code: "older_than_auto_window",
           label: `این خبر قدیمی‌تر از پنجرهٔ ${maxAgeDays} روزهٔ ارسال خودکار است تا انباشت قدیمی به کانال نرود.`,
-          hint: "برای ارسال همین خبر، دستی «ارسال» را بزنید یا AUTO_SEND_MAX_AGE_DAYS را تغییر دهید.",
+          hint: "برای همین خبر، دستی «ارسال» را بزنید (ارسال دستی بدون محدودیت سنی است) یا AUTO_SEND_MAX_AGE_DAYS را بیشتر کنید.",
         };
       }
     }
@@ -495,6 +495,12 @@ export async function runAutoDeliveryPass(
   return result;
 }
 
-export { loadAutoSendRule, describeRule, evaluateArticle } from "./rules";
+export {
+  loadAutoSendRule,
+  describeRule,
+  evaluateArticle,
+  readAutoSendMaxAgeDays,
+  readAutoSendQueueGraceMinutes,
+} from "./rules";
 export { resolveAutoSendRule, policyToRule } from "./resolve-rule";
 export type { AutoSendRule };

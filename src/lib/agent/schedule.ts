@@ -65,6 +65,13 @@ export type AgentScheduleConfig = {
   publishMode: PublishMode;
   /** Bulletin local times "HH:MM" (used when publishMode includes bulletin). */
   bulletinTimes: string[];
+  /**
+   * Weekdays the bulletin may publish on, JavaScript convention
+   * (0 = Sunday … 6 = Saturday). `null` => every day, which is the historical
+   * behaviour. Setting e.g. `[5]` makes the digest a weekly bulletin on Fridays.
+   * The per-item ("single") sending is never limited by this — only the digest.
+   */
+  bulletinDays: number[] | null;
 };
 
 export type ScheduleIngestSummary = {
@@ -163,7 +170,135 @@ export const DEFAULT_AGENT_SCHEDULE: AgentScheduleConfig = {
   gapSearchQueries: null,
   publishMode: "single",
   bulletinTimes: ["08:00", "14:00"],
+  bulletinDays: null,
 };
+
+/**
+ * Persian weekday labels, keyed by the JavaScript weekday number. The digest
+ * operator reads these in the picker, so a hand-written `[5]` in JSON can be
+ * checked against «جمعه» without a calendar.
+ */
+export const WEEKDAY_LABELS_FA: Record<number, string> = {
+  6: "شنبه",
+  0: "یکشنبه",
+  1: "دوشنبه",
+  2: "سه‌شنبه",
+  3: "چهارشنبه",
+  4: "پنجشنبه",
+  5: "جمعه",
+};
+
+/** Picker/render order: the Iranian week starts on Saturday. */
+export const BULLETIN_WEEKDAY_ORDER: number[] = [6, 0, 1, 2, 3, 4, 5];
+
+/**
+ * Accepted weekday spellings. Names (not bare numbers) are the recommended way
+ * to write the config, because `0` meaning "Sunday" is a JavaScript quirk that
+ * is easy to get wrong by hand.
+ */
+const WEEKDAY_TOKENS: Record<string, number> = {
+  sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2, wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4, friday: 5, fri: 5, saturday: 6, sat: 6,
+  "شنبه": 6, "یکشنبه": 0, "دوشنبه": 1, "سهشنبه": 2, "چهارشنبه": 3, "پنجشنبه": 4, "جمعه": 5,
+  // Arabic spellings (with and without the article), so a pasted name works.
+  "السبت": 6, " السبت": 6, "احد": 0, "أحد": 0, "الاثنين": 1, "الأثنين": 1, "أثنين": 1,
+  "الثلاثاء": 2, "ثلاثاء": 2, "الاربعاء": 3, "الأربعاء": 3, "أربعاء": 3, "الخميس": 4, "خميس": 4,
+  "الجمعة": 5, "جمعة": 5,
+};
+
+/** Folds a user-typed weekday to a comparable key (digits, ZWNJ, ي/ك variants). */
+function normalizeWeekdayToken(value: string): string {
+  return value
+    .replace(/[\u06F0-\u06F9]/g, (digit) => String(digit.charCodeAt(0) - 0x06f0))
+    .replace(/[\u0660-\u0669]/g, (digit) => String(digit.charCodeAt(0) - 0x0660))
+    .trim()
+    .toLowerCase()
+    .replace(/[\u200c\u200d]/g, "") // ZWNJ/ZWJ: «سه‌شنبه» === «سهشنبه»
+    .replace(/\u064a/g, "\u06cc") // Arabic ي -> Persian ی
+    .replace(/\u0643/g, "\u06a9") // Arabic ك -> Persian ک
+    .replace(/\u0640/g, ""); // tatweel
+}
+
+function weekdayValueOf(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 6) return value;
+  if (typeof value !== "string") return null;
+  const token = normalizeWeekdayToken(value);
+  if (/^\d$/.test(token)) {
+    const numeric = Number.parseInt(token, 10);
+    return numeric >= 0 && numeric <= 6 ? numeric : null;
+  }
+  const mapped = WEEKDAY_TOKENS[token];
+  return typeof mapped === "number" ? mapped : null;
+}
+
+/**
+ * Turns any shape of day input (array, comma string, Persian names, numbers)
+ * into a sorted unique list. Empty/invalid input means "every day" (`null`),
+ * never "never" — a typo must not silently mute the digest for the week.
+ */
+export function normalizeBulletinDays(input: unknown): number[] | null {
+  if (input === null || input === undefined || input === "") return null;
+  if (typeof input === "string" && ["all", "everyday", "هرروز", "هر روز", "daily"].includes(input.trim().toLowerCase())) {
+    return null;
+  }
+  const raw: unknown[] = Array.isArray(input) ? input : String(input).split(/[,،\s/|]+/);
+  const days = new Set<number>();
+  for (const entry of raw) {
+    const day = weekdayValueOf(entry);
+    if (day !== null) days.add(day);
+  }
+  return days.size > 0 ? [...days].sort((a, b) => a - b) : null;
+}
+
+/** Weekday (0=Sun…6=Sat) of a `YYYY-MM-DD` calendar date, timezone-independent. */
+export function weekdayOfDateKey(dateKey: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey.trim());
+  if (!match) return null;
+  const day = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(day.getTime()) ? null : day.getUTCDay();
+}
+
+/** true when `days` is an explicit allow-list (weekly/selected-days cadence). */
+export function isBulletinWeeklyCadence(days: number[] | null | undefined): boolean {
+  const normalized = normalizeBulletinDays(days);
+  return normalized !== null && normalized.length < 7;
+}
+
+/** Persian cadence for dashboards: «هر روز» / «فقط جمعه» / «سه‌شنبه و جمعه». */
+export function bulletinCadenceLabel(days: number[] | null | undefined): string {
+  const normalized = normalizeBulletinDays(days);
+  if (!normalized || normalized.length === 0) return "هر روز";
+  if (normalized.length === 7) return "هر روز";
+  const names = normalized.map((day) => WEEKDAY_LABELS_FA[day] ?? String(day));
+  return `فقط ${names.join(" و ")}`;
+}
+
+/**
+ * How many days of news a digest run should cover.
+ *
+ * 0 = no window at all, which is what a daily bulletin has always done (it takes
+ * whatever is still undelivered, so a missed run self-heals the next morning).
+ *
+ * Once bulletin *days* are configured the digest becomes a periodical, and an
+ * unbounded window would mix last month's unread backlog into "this week". The
+ * window is then the largest gap between two consecutive bulletin days — one
+ * Friday a week means 7 days, Tuesday+Friday means 4 — so every issue covers
+ * exactly the news that arrived since the previous issue could have run.
+ */
+export function bulletinLookbackDays(days: number[] | null | undefined): number {
+  const normalized = normalizeBulletinDays(days);
+  if (!normalized || normalized.length === 0 || normalized.length >= 7) return 0;
+  if (normalized.length === 1) return 7;
+
+  let maxGap = 1;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const current = normalized[index];
+    const next =
+      index + 1 < normalized.length ? normalized[index + 1] : normalized[0] + 7;
+    maxGap = Math.max(maxGap, next - current);
+  }
+  return Math.min(7, maxGap);
+}
 
 export type TimeParts = {
   year: number;
@@ -310,7 +445,12 @@ export function effectiveGraceMinutes(times: string[], fallback = SCHEDULE_GRACE
 
 export type DueSlot =
   | { due: true; slotKey: string; slotAt: Date; slotTime: string }
-  | { due: false; reason: "disabled" | "no_times" | "not_due" | "already_ran"; nextRunAt: Date | null };
+  | {
+      due: false;
+      /** `not_scheduled_day` = today is not one of the configured bulletin days. */
+      reason: "disabled" | "no_times" | "not_due" | "already_ran" | "not_scheduled_day";
+      nextRunAt: Date | null;
+    };
 
 /**
  * Decides whether any configured slot is currently runnable.
@@ -377,7 +517,7 @@ export function computeDueSlot(args: {
  */
 export function computeDueBulletinSlot(args: {
   now: Date;
-  config: Pick<AgentScheduleConfig, "enabled" | "timezone" | "bulletinTimes" | "publishMode">;
+  config: Pick<AgentScheduleConfig, "enabled" | "timezone" | "bulletinTimes" | "bulletinDays" | "publishMode">;
   lastBulletinSlot?: string | null;
   graceMinutes?: number;
 }): DueSlot {
@@ -390,6 +530,14 @@ export function computeDueBulletinSlot(args: {
 
   const parts = getZonedParts(now, config.timezone);
   const dateKey = dateKeyOf(parts);
+
+  // Weekly (or selected-days) digest: today must be one of the bulletin days.
+  // Deliberately checked on the *zoned calendar date*, never on `now.getUTCDay()`
+  // — a Tehran 00:30 Friday is Friday even though UTC still says Thursday.
+  const days = normalizeBulletinDays(config.bulletinDays);
+  if (days && !days.includes(weekdayOfDateKey(dateKey) ?? -1)) {
+    return { due: false, reason: "not_scheduled_day", nextRunAt: computeNextBulletinRun({ now, config })?.at ?? null };
+  }
   const nowMinutes = parts.hour * 60 + parts.minute;
 
   let match: { slotKey: string; slotTime: string; minutes: number } | null = null;
@@ -428,15 +576,17 @@ export function computeDueBulletinSlot(args: {
 /** First bulletin slot strictly after `now` (14-day lookahead). */
 export function computeNextBulletinRun(args: {
   now: Date;
-  config: Pick<AgentScheduleConfig, "timezone" | "bulletinTimes">;
+  config: Pick<AgentScheduleConfig, "timezone" | "bulletinTimes" | "bulletinDays">;
 }): { at: Date; slotKey: string; time: string } | null {
   const times = normalizeTimes(args.config.bulletinTimes);
   if (times.length === 0) return null;
+  const days = normalizeBulletinDays(args.config.bulletinDays);
 
   const todayKey = dateKeyOf(getZonedParts(args.now, args.config.timezone));
 
   for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
     const dateKey = addDaysToKey(todayKey, dayOffset);
+    if (days && !days.includes(weekdayOfDateKey(dateKey) ?? -1)) continue;
     for (const time of times) {
       const at = zonedTimeToUtc(dateKey, time, args.config.timezone);
       if (at.getTime() > args.now.getTime()) {
@@ -528,6 +678,7 @@ export function coerceScheduleConfig(raw: Record<string, unknown> | null | undef
       ? (source.publishMode as PublishMode)
       : DEFAULT_AGENT_SCHEDULE.publishMode,
     bulletinTimes: normalizeTimes(source.bulletinTimes ?? DEFAULT_AGENT_SCHEDULE.bulletinTimes),
+    bulletinDays: normalizeBulletinDays(source.bulletinDays ?? DEFAULT_AGENT_SCHEDULE.bulletinDays),
   };
 }
 
@@ -578,6 +729,18 @@ export function validateScheduleInput(raw: unknown): ScheduleValidation {
     ) {
       errors.push("برای حالت بولتن، حداقل یک ساعت انتشار بولتن لازم است.");
     }
+    // Day names/numbers are optional, but a *provided* list that normalizes to
+    // nothing means every entry was garbage — say so instead of quietly
+    // falling back to "every day" and surprising the operator on Friday.
+    if (source.bulletinDays !== undefined && source.bulletinDays !== null && source.bulletinDays !== "") {
+      if (config.bulletinDays === null) {
+        errors.push(
+          "روزهای بولتن نامعتبر بود؛ نام روز (مثلاً «جمعه» یا friday) یا عدد ۰ تا ۶ بفرستید. برای «هر روز» این فیلد را خالی بگذارید.",
+        );
+      } else if (config.publishMode === "bulletin" && config.bulletinDays.length > 0 && config.bulletinTimes.length === 0) {
+        errors.push("وقتی بولتن فقط در روزهای مشخصی منتشر می‌شود، حداقل یک ساعت بولتن لازم است.");
+      }
+    }
     // Duplicates are harmless and silently removed by normalizeTimes().
     config.times = normalized;
   }
@@ -613,5 +776,13 @@ export function describeSchedule(config: AgentScheduleConfig): string[] {
     `مقصد: ${destinationLabel(config.destination)}`,
     `در هر اجرا: حداکثر ${config.maxAnalyze} تحلیل و ${config.maxSend} ارسال`,
     `حداقل اهمیت ${config.minImportance}٪ · مرتبط بودن ${config.minRelevance}٪`,
+    ...(config.publishMode === "single" || config.bulletinTimes.length === 0
+      ? []
+      : [
+          `بولتن: ${config.bulletinTimes.join(" و ")} — ${bulletinCadenceLabel(config.bulletinDays)}` +
+            (bulletinLookbackDays(config.bulletinDays) > 0
+              ? ` (پوشش ${bulletinLookbackDays(config.bulletinDays)} روز اخیر)`
+              : ""),
+        ]),
   ];
 }

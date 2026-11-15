@@ -6,8 +6,16 @@
  * synthesized in `ai/bulletin-brief.ts`.
  */
 
-/** Upper bound of items packed into one digest (roadmap: 3–5). */
+/** Default number of items in one digest (roadmap: 3–5). */
 export const MAX_BULLETIN_ITEMS = 5;
+
+/**
+ * Hard ceiling for `maxItems`. Daily digests stay at the 5-item default, but a
+ * weekly digest legitimately has more to say — one entry per day plus a lead —
+ * so the setting is allowed to go up to ten before the message length limit
+ * (see BALE_MESSAGE_LIMIT) becomes the binding constraint.
+ */
+export const BULLETIN_ITEM_CEILING = 10;
 
 /**
  * Bale Bot API rejects a single message longer than 4096 characters
@@ -73,7 +81,11 @@ export const DEFAULT_BULLETIN_SETTINGS: BulletinSettings = {
   introMaxTokens: 400,
 };
 export function resolveBulletinSettings(value?: Partial<BulletinSettings>): BulletinSettings {
-  return { ...DEFAULT_BULLETIN_SETTINGS, ...value };
+  const merged = { ...DEFAULT_BULLETIN_SETTINGS, ...value };
+  // A stored value outside 1..10 (hand-edited config, older UI) must not be
+  // able to produce an empty or 100-item digest.
+  const maxItems = Number.isFinite(merged.maxItems) ? Math.trunc(merged.maxItems) : DEFAULT_BULLETIN_SETTINGS.maxItems;
+  return { ...merged, maxItems: Math.max(1, Math.min(BULLETIN_ITEM_CEILING, maxItems)) };
 }
 
 export function validateBulletinSettings(value: unknown): string[] {
@@ -99,8 +111,11 @@ export function validateBulletinSettings(value: unknown): string[] {
 
   if (settings.title !== undefined && (typeof settings.title !== "string" || !settings.title.trim() || settings.title.length > 100))
     errors.push("عنوان بولتن باید یک تا ۱۰۰ نویسه باشد.");
-  if (settings.maxItems !== undefined && (!Number.isInteger(settings.maxItems) || settings.maxItems < 1 || settings.maxItems > 5))
-    errors.push("تعداد خبر بولتن باید یک تا پنج باشد.");
+  if (
+    settings.maxItems !== undefined &&
+    (!Number.isInteger(settings.maxItems) || settings.maxItems < 1 || settings.maxItems > BULLETIN_ITEM_CEILING)
+  )
+    errors.push(`تعداد خبر بولتن باید ۱ تا ${BULLETIN_ITEM_CEILING} باشد (برای بولتن هفتگی ۸ تا ۱۰ مناسب است).`);
   if (settings.introMaxTokens !== undefined && (!Number.isInteger(settings.introMaxTokens) || settings.introMaxTokens < 50 || settings.introMaxTokens > 500))
     errors.push("سقف توکن مقدمه باید ۵۰ تا ۵۰۰ باشد.");
   if (settings.introPrompt !== undefined && (typeof settings.introPrompt !== "string" || !settings.introPrompt.trim() || settings.introPrompt.length > 4000))
@@ -201,7 +216,7 @@ export function pickBulletinItems<
       if (importance !== 0) return importance;
       return (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0);
     })
-    .slice(0, Math.max(0, Math.min(max, MAX_BULLETIN_ITEMS)));
+    .slice(0, Math.max(0, Math.min(max, BULLETIN_ITEM_CEILING)));
 }
 
 /**
@@ -252,19 +267,32 @@ export function buildBulletinMessage(args: {
   /** IANA timezone for the header date (e.g. "Asia/Tehran"). */
   timezone: string;
   settings?: Partial<BulletinSettings>;
+  /**
+   * Start of the covered period (weekly digests pass «seven days ago»). When the
+   * gap to `generatedAt` is more than a day, the header shows a range
+   * («۸ آبان تا ۱۴ آبان») instead of a single date, so a weekly issue cannot be
+   * mistaken for a daily one. Omitted/short windows keep today's date.
+   */
+  windowStart?: Date | null;
 }): string {
   const { intro, generatedAt, timezone } = args;
   const settings = resolveBulletinSettings(args.settings);
   const items = args.items.slice(0, settings.maxItems);
 
-  let dateLabel = generatedAt.toISOString().slice(0, 10);
-  try {
-    dateLabel = generatedAt.toLocaleDateString("fa-IR", {
-      timeZone: timezone,
-      dateStyle: "medium",
-    });
-  } catch {
-    // Invalid timezone => keep the ISO date.
+  const formatDay = (date: Date): string => {
+    try {
+      return date.toLocaleDateString("fa-IR", { timeZone: timezone, dateStyle: "medium" });
+    } catch {
+      // Invalid timezone => keep the ISO date.
+      return date.toISOString().slice(0, 10);
+    }
+  };
+
+  let dateLabel = formatDay(generatedAt);
+  // A "weekly" header only makes sense when the window really spans days.
+  const windowStart = args.windowStart ?? null;
+  if (windowStart && generatedAt.getTime() - windowStart.getTime() >= 36 * 60 * 60 * 1000) {
+    dateLabel = `${formatDay(windowStart)} تا ${dateLabel}`;
   }
 
   const lines: string[] = [`🗞️ ${escapeMd(settings.title)} — ${dateLabel}`];

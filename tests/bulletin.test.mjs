@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BULLETIN_ITEM_CEILING,
   MAX_BULLETIN_ITEMS,
   BALE_MESSAGE_LIMIT,
   DEFAULT_BULLETIN_SETTINGS,
@@ -149,9 +150,11 @@ test("bulletin controls change title, count and optional sections, preserving so
 });
 
 test("bulletin validation rejects invalid limits, flags, text and containers", () => {
-  for (const value of [null, [], {maxItems:0}, {maxItems:6}, {maxItems:1.5}, {introMaxTokens:501}, {introMaxTokens:0}, {aiIntro:"false"}, {title:" "}, {introPrompt:""}]) {
+  for (const value of [null, [], {maxItems:0}, {maxItems:BULLETIN_ITEM_CEILING+1}, {maxItems:1.5}, {introMaxTokens:501}, {introMaxTokens:0}, {aiIntro:"false"}, {title:" "}, {introPrompt:""}]) {
     assert.ok(validateBulletinSettings(value).length > 0);
   }
+  // 6..10 became valid with the weekly digest (see BULLETIN_ITEM_CEILING).
+  assert.deepEqual(validateBulletinSettings({maxItems:6, aiIntro:false, introMaxTokens:50}), []);
   assert.deepEqual(validateBulletinSettings({maxItems:3, aiIntro:false, introMaxTokens:50}), []);
 });
 
@@ -232,4 +235,69 @@ test("buildBulletinMessage: five full items can exceed one Bale message and must
   const chunks = splitBaleMessage(text);
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) assert.ok(chunk.length <= BALE_MESSAGE_LIMIT);
+});
+
+test("weekly digests label the header with the covered range, daily ones with a single date", () => {
+  const generatedAt = new Date("2026-11-13T17:00:00Z"); // 20:30 Tehran = Fri 22 Aban
+  const daily = buildBulletinMessage({
+    intro: null,
+    items: [item({})],
+    generatedAt,
+    timezone: "Asia/Tehran",
+  });
+  const weekly = buildBulletinMessage({
+    intro: null,
+    items: [item({})],
+    generatedAt,
+    timezone: "Asia/Tehran",
+    windowStart: new Date(generatedAt.getTime() - 7 * 24 * 60 * 60 * 1000),
+  });
+
+  const dailyHeader = daily.split("\n")[0];
+  const weeklyHeader = weekly.split("\n")[0];
+  assert.equal(dailyHeader.includes("تا"), false, dailyHeader);
+  assert.match(weeklyHeader, /۱۵ آبان ۱۴۰۵ تا ۲۲ آبان ۱۴۰۵/, weeklyHeader);
+
+  // A one-day window is not a range — no «تا» for a daily digest.
+  const yesterday = buildBulletinMessage({
+    intro: null,
+    items: [item({})],
+    generatedAt,
+    timezone: "Asia/Tehran",
+    windowStart: new Date(generatedAt.getTime() - 24 * 60 * 60 * 1000),
+  });
+  assert.equal(yesterday.split("\n")[0].includes("تا"), false, yesterday.split("\n")[0]);
+});
+
+test("maxItems reaches ten so a weekly digest can cover a week", () => {
+  assert.equal(BULLETIN_ITEM_CEILING, 10);
+  assert.equal(DEFAULT_BULLETIN_SETTINGS.maxItems, MAX_BULLETIN_ITEMS, "the default stays a 5-item digest");
+  assert.equal(resolveBulletinSettings({ maxItems: 8 }).maxItems, 8);
+  assert.equal(resolveBulletinSettings({ maxItems: 99 }).maxItems, BULLETIN_ITEM_CEILING);
+  assert.equal(resolveBulletinSettings({ maxItems: 0 }).maxItems, 1);
+  assert.equal(resolveBulletinSettings({ maxItems: Number.NaN }).maxItems, MAX_BULLETIN_ITEMS);
+  assert.deepEqual(validateBulletinSettings({ maxItems: 10 }), []);
+  assert.equal(validateBulletinSettings({ maxItems: 11 }).length, 1);
+});
+
+test("pickBulletinItems honours a cap above the old five-item ceiling", () => {
+  const many = Array.from({ length: 12 }, (_, index) =>
+    item({ id: "n" + index, importanceScore: 90 - index, publishedAt: new Date(1700000000000 - index * 3600_000) }),
+  );
+  assert.equal(pickBulletinItems(many).length, MAX_BULLETIN_ITEMS, "no cap argument => 5");
+  assert.equal(pickBulletinItems(many, 10).length, 10);
+  assert.equal(pickBulletinItems(many, 50).length, BULLETIN_ITEM_CEILING, "the ceiling still binds");
+});
+
+test("a weekly digest still respects settings.maxItems when rendering", () => {
+  const many = Array.from({ length: 9 }, (_, index) => item({ id: "n" + index, title: "خبر " + (index + 1) }));
+  const text = buildBulletinMessage({
+    intro: null,
+    items: many,
+    generatedAt: new Date("2026-11-13T17:00:00Z"),
+    timezone: "Asia/Tehran",
+    settings: { maxItems: 9 },
+  });
+  assert.match(text, /خبر 9/);
+  assert.equal(text.includes("خبر 10"), false);
 });

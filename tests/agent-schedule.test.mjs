@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BULLETIN_WEEKDAY_ORDER,
   DEFAULT_AGENT_SCHEDULE,
+  WEEKDAY_LABELS_FA,
+  bulletinCadenceLabel,
+  bulletinLookbackDays,
   coerceScheduleConfig,
   computeDueSlot,
   computeDueBulletinSlot,
+  computeNextBulletinRun,
   computeNextRun,
+  normalizeBulletinDays,
+  weekdayOfDateKey,
   describeSchedule,
   effectiveGraceMinutes,
   getZonedParts,
@@ -277,4 +284,158 @@ test('per-item schedule catches up after multi-hour GitHub Actions cron delay wi
   });
   assert.equal(noBackfill.due, false);
   assert.equal(noBackfill.reason, 'already_ran');
+});
+
+// ── weekly bulletin (bulletinDays) ─────────────────────────────────────────
+
+test("normalizeBulletinDays accepts names, numbers and Persian digits — garbage means every day", () => {
+  assert.deepEqual(normalizeBulletinDays([5]), [5]);
+  assert.deepEqual(normalizeBulletinDays("5"), [5]);
+  assert.deepEqual(normalizeBulletinDays("۵"), [5], "Persian digits as a string");
+  assert.deepEqual(normalizeBulletinDays("جمعه"), [5]);
+  assert.deepEqual(normalizeBulletinDays(" Fri "), [5]);
+  assert.deepEqual(normalizeBulletinDays(["سه‌شنبه", "friday"]), [2, 5], "ZWNJ-insensitive + sorted");
+  assert.deepEqual(normalizeBulletinDays(["6", 6, "شنبه"]), [6], "deduped");
+  assert.deepEqual(normalizeBulletinDays([0, 1, 2, 3, 4, 5, 6]), [0, 1, 2, 3, 4, 5, 6]);
+  // Never "no days at all": a typo must not mute the digest for a whole week.
+  assert.equal(normalizeBulletinDays("آدم‌ربا"), null);
+  assert.equal(normalizeBulletinDays([9, -1, "x"]), null);
+  assert.equal(normalizeBulletinDays(null), null);
+  assert.equal(normalizeBulletinDays(undefined), null);
+  assert.equal(normalizeBulletinDays([]), null);
+  assert.equal(normalizeBulletinDays("هر روز"), null);
+});
+
+test("weekdayOfDateKey matches Intl for known anchors (0 = Sunday, 5 = Friday)", () => {
+  assert.equal(weekdayOfDateKey("2026-11-13"), 5, "a Friday");
+  assert.equal(weekdayOfDateKey("2026-11-14"), 6, "the Saturday after it");
+  assert.equal(weekdayOfDateKey("2000-01-01"), 6);
+  for (const key of ["2026-11-13", "2026-11-14", "2026-11-20", "2024-02-29"]) {
+    const viaIntl = new Date(key + "T12:00:00Z").getUTCDay();
+    const name = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long" }).format(
+      new Date(key + "T12:00:00Z"),
+    );
+    assert.equal(weekdayOfDateKey(key), viaIntl, name);
+    assert.equal(WEEKDAY_LABELS_FA[viaIntl] !== undefined, true, "every weekday has a Persian label");
+  }
+  assert.equal(weekdayOfDateKey("2026-11-1"), null, "malformed key is not guessed");
+  assert.deepEqual(BULLETIN_WEEKDAY_ORDER, [6, 0, 1, 2, 3, 4, 5], "picker starts at شنبه");
+});
+
+test("bulletinLookbackDays: daily = no window, weekly = 7 days, twice-weekly = the gap", () => {
+  assert.equal(bulletinLookbackDays(null), 0, "daily digest keeps the historical unbounded selection");
+  assert.equal(bulletinLookbackDays([]), 0);
+  assert.equal(bulletinLookbackDays([5]), 7, "one day a week covers a week");
+  assert.equal(bulletinLookbackDays([2, 5]), 4, "Tue+Fri: the larger gap decides");
+  assert.equal(bulletinLookbackDays([0, 1, 2, 3, 4, 5, 6]), 0, "every day selected = no window");
+});
+
+test("a weekly bulletin fires on its day and stays runnable to the end of that local day", () => {
+  const config = schedule({
+    publishMode: "bulletin",
+    times: [],
+    bulletinTimes: ["20:00"],
+    bulletinDays: [5],
+  });
+
+  // 2026-11-13 is a Friday; 20:30 Tehran = 17:00Z (UTC+3:30, no DST).
+  const fridayNight = new Date("2026-11-13T17:30:00Z");
+  const due = computeDueBulletinSlot({ now: fridayNight, config });
+  assert.equal(due.due, true);
+  assert.equal(due.slotKey, "B2026-11-13T20:00");
+
+  // A late tick on the same local day still catches up: a cold start must not
+  // cost the operator a whole week. 20:00Z = 23:30 Tehran, still Friday.
+  const fridayLate = new Date("2026-11-13T20:00:00Z");
+  assert.equal(computeDueBulletinSlot({ now: fridayLate, config }).due, true);
+
+  // Once Tehran crosses into Saturday the issue is gone for this week.
+  const saturdayEarly = new Date("2026-11-13T20:40:00Z"); // 00:10 Sat Tehran
+  assert.equal(computeDueBulletinSlot({ now: saturdayEarly, config }).reason, "not_scheduled_day");
+
+  // Saturday: not this week's issue, and the reason says so.
+  const saturday = new Date("2026-11-14T17:30:00Z");
+  const skipped = computeDueBulletinSlot({ now: saturday, config });
+  assert.equal(skipped.due, false);
+  assert.equal(skipped.reason, "not_scheduled_day");
+  assert.notEqual(skipped.nextRunAt, null);
+});
+
+test("a daily bulletin is not gated by day at all (backwards compatible)", () => {
+  const config = schedule({ publishMode: "bulletin", bulletinTimes: ["20:00"], bulletinDays: null });
+  for (const day of ["2026-11-13", "2026-11-14", "2026-11-15", "2026-11-16"]) {
+    const now = new Date(day + "T17:30:00Z"); // 20:30 in Tehran
+    assert.equal(computeDueBulletinSlot({ now, config }).due, true, day);
+  }
+  // Selecting all seven days is the same as selecting none.
+  const everyDay = { ...config, bulletinDays: [0, 1, 2, 3, 4, 5, 6] };
+  assert.equal(computeDueBulletinSlot({ now: new Date("2026-11-16T17:30:00Z"), config: everyDay }).due, true);
+});
+
+test("the claimed-slot guard still wins over the day gate", () => {
+  const config = schedule({ publishMode: "bulletin", bulletinTimes: ["20:00"], bulletinDays: [5] });
+  const friday = new Date("2026-11-13T17:30:00Z");
+  const ran = computeDueBulletinSlot({ now: friday, config, lastBulletinSlot: "B2026-11-13T20:00" });
+  assert.equal(ran.due, false);
+  assert.equal(ran.reason, "already_ran");
+});
+
+test("next bulletin run skips to the next configured weekday", () => {
+  const config = schedule({ publishMode: "bulletin", bulletinTimes: ["20:00"], bulletinDays: [5] });
+  const saturdayNoon = new Date("2026-11-14T08:00:00Z");
+  const next = computeNextBulletinRun({ now: saturdayNoon, config });
+  assert.equal(next.slotKey, "B2026-11-20T20:00", "six days ahead, not tomorrow");
+  assert.equal(weekdayOfDateKey(next.slotKey.slice(1, 11)), 5);
+
+  // Daily config still means "today or tomorrow".
+  const daily = computeNextBulletinRun({ now: saturdayNoon, config: { ...config, bulletinDays: null } });
+  assert.equal(daily.slotKey, "B2026-11-14T20:00");
+});
+
+test("bulletinDays round-trips through coerce, save validation and the dashboard line", () => {
+  const coerced = coerceScheduleConfig({
+    enabled: true,
+    publishMode: "bulletin",
+    bulletinTimes: ["20:00"],
+    bulletinDays: ["جمعه"],
+  });
+  assert.deepEqual(coerced.bulletinDays, [5]);
+  assert.equal(coerceScheduleConfig({}).bulletinDays, null, "absent => every day");
+  assert.deepEqual(
+    coerceScheduleConfig({ bulletinDays: ["جمعه", "garbage", "5"] }).bulletinDays,
+    [5],
+    "garbage entries drop, valid ones survive",
+  );
+
+  const saved = validateScheduleInput({
+    enabled: true,
+    timezone: "Asia/Tehran",
+    times: ["08:00"],
+    destination: "bale",
+    publishMode: "bulletin",
+    bulletinTimes: ["20:00"],
+    bulletinDays: [5],
+  });
+  assert.equal(saved.ok, true);
+  assert.deepEqual(saved.config.bulletinDays, [5]);
+
+  const garbage = validateScheduleInput({
+    enabled: true,
+    timezone: "Asia/Tehran",
+    times: ["08:00"],
+    publishMode: "bulletin",
+    bulletinTimes: ["20:00"],
+    bulletinDays: ["پریروز"],
+  });
+  assert.equal(garbage.ok, false);
+  assert.match(garbage.errors.join(" "), /روزهای بولتن/);
+
+  const described = describeSchedule(
+    coerceScheduleConfig({ enabled: true, publishMode: "bulletin", bulletinTimes: ["20:00"], bulletinDays: [5] }),
+  ).join(" | ");
+  assert.match(described, /فقط جمعه/);
+  assert.match(described, /پوشش 7 روز/);
+  assert.equal(bulletinCadenceLabel(null), "هر روز");
+  assert.equal(bulletinCadenceLabel([5]), "فقط جمعه");
+  assert.equal(bulletinCadenceLabel([2, 5]), "فقط سه‌شنبه و جمعه");
 });

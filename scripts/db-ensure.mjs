@@ -287,6 +287,9 @@ const STEPS = [
   { name: "column agent_schedules.last_gap_search_at", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "last_gap_search_at" timestamp with time zone` },
   { name: "column agent_schedules.publish_mode", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "publish_mode" text DEFAULT 'single' NOT NULL` },
   { name: "column agent_schedules.bulletin_times", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "bulletin_times" jsonb DEFAULT '["08:00","14:00"]'::jsonb NOT NULL` },
+  // Weekly bulletins: NULL/absent means "every day", so adding this column never
+  // changes the behaviour of an existing deployment until a day is selected.
+  { name: "column agent_schedules.bulletin_days", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "bulletin_days" jsonb` },
   { name: "column agent_schedules.last_bulletin_slot", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "last_bulletin_slot" text` },
   { name: "column agent_schedules.last_bulletin_at", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "last_bulletin_at" timestamp with time zone` },
   { name: "column agent_schedules.last_tick_at", sql: `ALTER TABLE "agent_schedules" ADD COLUMN IF NOT EXISTS "last_tick_at" timestamp with time zone` },

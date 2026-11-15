@@ -2,6 +2,8 @@ import { checkAdminAccess } from "@/lib/admin/access";
 import { diagnoseDbError } from "@/lib/admin/db-errors";
 import { getBaleConfigStatus } from "@/lib/bale/client";
 import {
+  bulletinCadenceLabel,
+  bulletinLookbackDays,
   computeDueBulletinSlot,
   computeDueSlot,
   computeNextBulletinRun,
@@ -57,6 +59,8 @@ export async function GET() {
       gapSearchQueries: record.gapSearchQueries,
       publishMode: record.publishMode,
       bulletinTimes: record.bulletinTimes,
+      // Weekday numbers (0 = Sunday … 6 = Saturday); null => every day.
+      bulletinDays: record.bulletinDays,
     },
     status: {
       persisted: Boolean(record.id),
@@ -75,6 +79,10 @@ export async function GET() {
         const bulletinNext = computeNextBulletinRun({ now: new Date(), config: record });
         return bulletinNext ? bulletinNext.at.toISOString() : null;
       })(),
+      // «هر روز» or «فقط جمعه» — what the day picker currently means, plus how
+      // many days of news the next digest will cover.
+      bulletinCadence: bulletinCadenceLabel(record.bulletinDays),
+      bulletinWindowDays: bulletinLookbackDays(record.bulletinDays),
       dueReason: due.due ? "due" : due.reason,
       running: isScheduledRunInProgress(),
     },

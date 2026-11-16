@@ -11,7 +11,15 @@ import {
   validateAiConfigInput,
 } from "@/lib/ai/config-service";
 import type { AiConfigInput } from "@/lib/ai/config-types";
-import { sweepOfftopicBacklog } from "@/lib/news/analysis-queue";
+import {
+  BULK_ANALYSIS,
+  clampBulkConcurrency,
+  clampBulkTarget,
+  estimateItemMs,
+  planBulkChunk,
+  type BulkStopReason,
+} from "@/lib/news/bulk-analysis";
+import { analyzeSequentially, applyTopicGate, sweepOfftopicBacklog } from "@/lib/news/analysis-queue";
 import { drainArticleQueue } from "@/lib/news/article-queue";
 import { getNewsStatusSummary } from "@/lib/news/news-admin";
 import {
@@ -21,17 +29,20 @@ import {
   mergePackTopics,
 } from "@/lib/news/news-packs";
 import { evaluateTopicFilter } from "@/lib/news/topic-filter";
-import { inArray, sql } from "drizzle-orm";
+import { asc, inArray, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 type QueueActionBody = {
-  action?: "analyze_batch" | "apply_ai_pack_filter" | "retry_failed" | "send_ready_to_bale";
+  action?: "analyze_batch" | "analyze_backlog" | "apply_ai_pack_filter" | "retry_failed" | "send_ready_to_bale";
   limit?: number;
   concurrency?: number;
 };
+
+/** Rows a bulk run may still analyze: never-delivered *and* not in flight. */
+const BULK_QUEUE_SQL = sql`${news.analyzedAt} IS NULL AND ${news.status} IN ('READY_FOR_AI', 'FETCHED', 'FAILED')`;
 
 async function restoreSidelinedUnanalyzed(): Promise<number> {
   const restored = await db
@@ -170,6 +181,135 @@ export async function POST(request: Request) {
         message: queue.blocked
           ? `صف به ترتیب ورود متوقف یا در انتظار است: ${queue.blocked}`
           : `${analyzed} مقاله به ترتیب ورود تحلیل شد${queue.skipped.length ? `، ${queue.skipped.length} مورد غیرمرتبط کنار گذاشته شد` : ""}${explainZeroSend(autoSend)}.`,
+      });
+    }
+
+    if (action === "analyze_backlog") {
+      // Analysis only, several articles at a time, no queue lock and no
+      // delivery: an operator with spare API quota can drain a backlog without
+      // waiting for the serial queue (~10 articles/minute) to work through it.
+      // Sending stays entirely policy-driven — the next auto pass (or the manual
+      // «ارسال آماده‌ها») picks the results up in arrival order.
+      const target = clampBulkTarget(body.limit);
+      const concurrency = clampBulkConcurrency(body.concurrency);
+      const startedAt = Date.now();
+      let attempted = 0;
+      let analyzed = 0;
+      let failed = 0;
+      let inFlight = 0;
+      let skippedOfftopic = 0;
+      let queueRemaining = 0;
+      let itemMs: number = BULK_ANALYSIS.estimatedItemMs;
+      let stopReason: BulkStopReason = "ok";
+      let firstError: string | null = null;
+
+      for (let wave = 0; wave < 60; wave += 1) {
+        const [countRow] = await db
+          .select({ count: sql`count(*)::int` })
+          .from(news)
+          .where(BULK_QUEUE_SQL);
+        queueRemaining = Number(countRow?.count ?? 0);
+
+        const plan = planBulkChunk({
+          targetRemaining: target - attempted,
+          queueRemaining,
+          elapsedMs: Date.now() - startedAt,
+          concurrency,
+          itemMs,
+        });
+        if (!plan.run) {
+          stopReason = plan.reason;
+          break;
+        }
+
+        const rows = await db
+          .select({ id: news.id })
+          .from(news)
+          .where(BULK_QUEUE_SQL)
+          .orderBy(asc(news.createdAt), asc(news.id))
+          .limit(plan.chunk);
+        if (rows.length === 0) {
+          stopReason = "queue_empty";
+          break;
+        }
+
+        attempted += rows.length;
+        const waveStartedAt = Date.now();
+        const gated = await applyTopicGate(rows.map((row) => row.id));
+        skippedOfftopic += gated.skipped.length;
+        if (gated.pass.length === 0) continue;
+
+        const results = await analyzeSequentially(gated.pass, {
+          concurrency: plan.concurrency,
+          // Never start work the request cannot finish inside its own budget.
+          maxDurationMs: Math.max(5_000, BULK_ANALYSIS.budgetMs - (Date.now() - startedAt)),
+        });
+
+        const failures = results.filter((entry) => !entry.ok);
+        // A row another worker is holding is not this run's failure.
+        const busyEntries = failures.filter((entry) => entry.code === "already_processing");
+        const realFailures = failures.filter((entry) => entry.code !== "already_processing");
+
+        analyzed += results.length - failures.length;
+        inFlight += busyEntries.length;
+        failed += realFailures.length;
+        itemMs = estimateItemMs({
+          previousItemMs: itemMs,
+          waveElapsedMs: Date.now() - waveStartedAt,
+          waveCompleted: results.length,
+        });
+        if (realFailures.length && !firstError) {
+          firstError = `${realFailures[0].message ?? realFailures[0].code ?? "تحلیل ناموفق بود"}${
+            realFailures[0].detail ? ` (${realFailures[0].detail.slice(0, 140)})` : ""
+          }`;
+        }
+
+        if (results.length < gated.pass.length) {
+          // The pool cut the wave short: either the time budget ran out or the
+          // provider failed fatally (auth/quota), which trips its circuit breaker.
+          stopReason = "budget_exhausted";
+          break;
+        }
+      }
+
+      const summary = await getNewsStatusSummary();
+      const remaining = summary.byStatus.READY_FOR_AI ?? 0;
+      // Truthful number for the sentence below: the bulk queue is broader than
+      // READY_FOR_AI (it also covers sidelined FETCHED and FAILED rows), so
+      // counting only READY_FOR_AI could claim "empty" while work remained.
+      const [tailRow] = await db.select({ count: sql`count(*)::int` }).from(news).where(BULK_QUEUE_SQL);
+      const remainingQueue = Number(tailRow?.count ?? 0);
+      const tail =
+        stopReason === "queue_empty" || remainingQueue === 0
+          ? "صف تحلیل خالی شد ✓"
+          : stopReason === "budget_exhausted"
+            ? `زمان این درخواست تمام شد — با یک کلیک دیگر از همان نقطه ادامه می‌دهد (باقی‌مانده: ${remainingQueue.toLocaleString("fa-IR")}).`
+            : `باقی‌ماندهٔ صف: ${remainingQueue.toLocaleString("fa-IR")}.`;
+
+      return Response.json({
+        success: true,
+        action,
+        analyzed,
+        failed,
+        inFlight,
+        skippedOfftopic,
+        attempted,
+        target,
+        concurrency,
+        stopReason,
+        elapsedMs: Date.now() - startedAt,
+        firstError,
+        remainingReady: remaining,
+        remainingQueue,
+        summary,
+        message:
+          analyzed === 0 && attempted === 0
+            ? "مقالهٔ تحلیل‌نشده‌ای در صف نبود."
+            : `تحلیل انبوه: ${analyzed.toLocaleString("fa-IR")} مقاله (${attempted.toLocaleString("fa-IR")} تلاش، ` +
+              `${skippedOfftopic.toLocaleString("fa-IR")} غیرمرتبط، ${failed.toLocaleString("fa-IR")} خطا` +
+              `${inFlight ? `، ${inFlight} در دست عملیات دیگر` : ""}) — ` +
+              (firstError ? `نخستین خطا: ${firstError}. ` : "") +
+              `${tail} این حالت فقط تحلیل می‌کند؛ ارسال بر عهدهٔ سیاست ارسال خودکار یا دکمهٔ «ارسال» است.`,
       });
     }
 

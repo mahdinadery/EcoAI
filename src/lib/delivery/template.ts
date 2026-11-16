@@ -16,6 +16,7 @@ import {
   buildNewsMessage,
   escapeMd,
   formatBilingualTitle,
+  separateSummarySections,
   mdLink,
   stripEmptyLabelBlocks,
   type MessageExtras,
@@ -72,7 +73,10 @@ function value(varName: PublishingTemplateVar, article: NewsRow): string {
     case "hashtags":
       return escapeMd(article.hashtags ?? "");
     case "summary":
-      return escapeMd(article.summary ?? "—");
+      // One blank line between the labeled sections (❓/📊/🔬/📈/⚙️). The stored
+      // text is never rewritten — this is display-layer only, so re-sending an
+      // older article benefits too.
+      return escapeMd(separateSummarySections(article.summary) || "—");
     case "category":
       return escapeMd(article.category ?? "اقتصاد");
     case "importanceScore":

@@ -88,6 +88,70 @@ function compactMultiline(value: string | null | undefined, limit: number): stri
 }
 
 /**
+ * An emoji-led section label: `❓ پرسش پژوهش:`, `📈 نتایج:`, `🧭 توصیهٔ سیاستی:` …
+ *
+ * The colon is part of the signature on purpose. Requiring it means an emoji used
+ * *inside* a sentence («… با یک 📊 داخل جمله …») is never treated as a section
+ * start, so the normalizer splits real labels only — including custom labels an
+ * operator defines in the prompt, which is why no fixed marker list is needed.
+ */
+const SUMMARY_SECTION_HEAD = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]\u{FE0F}?[^\n]{0,28}?[:：]/gu;
+
+/**
+ * Puts exactly one blank line between the labeled sections of an AI summary.
+ *
+ * The prompt asks for «هر بخش در سطر جدا», but models routinely return the
+ * sections glued into one paragraph or stacked on consecutive single lines —
+ * which reads as a wall of text while every other block of the message has clean
+ * breathing room. Fixing it here (not only in the prompt) means articles analyzed
+ * before the prompt change render correctly too, and no delivery depends on the
+ * model having obeyed.
+ *
+ * Deliberately narrow so nothing else changes:
+ *   · a cut happens only before a section head that starts the text or follows
+ *     whitespace;
+ *   · fewer than two sections => text returned as-is, so a plain one-paragraph
+ *     summary is never split mid-sentence;
+ *   · the separator is always exactly one blank line, so re-running is a no-op;
+ *   · no word, link or character of content is added, removed or reordered.
+ */
+export function separateSummarySections(value: string | null | undefined): string {
+  const text = (value ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .trim();
+  if (!text) return "";
+
+  const starts: number[] = [];
+  let consumedUntil = -1;
+  for (const match of text.matchAll(SUMMARY_SECTION_HEAD)) {
+    const index = match.index ?? 0;
+    const before = index === 0 ? "\n" : text[index - 1]!;
+    // `consumedUntil` skips a head that overlaps the previous match (the lazy
+    // label quantifier can end inside it). Several heads on the SAME line are all
+    // kept — that glued-paragraph case is exactly what this function exists for.
+    if (/\s/.test(before) && index >= consumedUntil) {
+      starts.push(index);
+      consumedUntil = index + match[0].length;
+    }
+  }
+
+  const cuts = starts.filter((index) => index > 0);
+  if (cuts.length === 0) return text;
+
+  const parts: string[] = [text.slice(0, cuts[0]!).trim()];
+  for (let i = 0; i < cuts.length; i += 1) {
+    const to = i + 1 < cuts.length ? cuts[i + 1]! : text.length;
+    const part = text.slice(cuts[i]!, to).trim();
+    if (part) parts.push(part);
+  }
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
+/**
  * Strips any legacy leading Iran-flag prefix (`\u{1F1EE}\u{1F1F7}`) from
  * pre-existing rendered messages stored in `deliveries` / outbox.
  */
@@ -166,7 +230,7 @@ export function buildNewsMessage(
     formatBilingualTitle(article.title, article.translatedTitle, 300),
     "",
     "خلاصه:",
-    escapeMd(compactMultiline(article.summary, MAX_SUMMARY_LENGTH)),
+    escapeMd(compactMultiline(separateSummarySections(article.summary), MAX_SUMMARY_LENGTH)),
     ...(why ? ["", "چرا مهم است:", escapeMd(compact(why, 280))] : []),
     ...(entities ? ["", "نهادها:", escapeMd(entities)] : []),
     ...related.flatMap((title) => ["", "مرتبط با:", escapeMd(compact(title, 160))]),

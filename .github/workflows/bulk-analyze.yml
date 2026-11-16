@@ -1,0 +1,128 @@
+name: Bulk analyze backlog (tokens → analysis, no sending)
+
+# Manual, on-demand drain of the analysis backlog. Use it when the API quota is
+# sitting idle and the queue would take hours at its serial pace (~10 articles a
+# minute, oldest-first, stopping at the first failure so delivery order stays
+# trustworthy).
+#
+# This workflow calls `POST /api/admin/news/queue` with `action: "analyze_backlog"`
+# repeatedly: each request analyzes up to `per_request` articles with several
+# concurrent AI calls, then returns. It NEVER sends anything to Bale/Telegram —
+# publishing remains whatever the auto-send policy (or a manual «ارسال») decides,
+# so a bulk run can't push an unreviewed article to the channel.
+#
+# Needs the same repository secrets as the scheduled tick:
+#   APP_URL, ADMIN_ACCESS_KEY (optional but required when the admin gate is on).
+#
+# The regular 5-minute tick keeps running meanwhile: the bulk action deliberately
+# does not take the queue advisory lock, so deliveries are not starved.
+
+on:
+  workflow_dispatch:
+    inputs:
+      total:
+        description: "Total articles to attempt this run"
+        required: false
+        default: "500"
+      per_request:
+        description: "Articles per request (1–500; the server bounds each request by time too)"
+        required: false
+        default: "120"
+      concurrency:
+        description: "Parallel AI calls (1–8)"
+        required: false
+        default: "6"
+
+concurrency:
+  group: bulk-analyze-backlog
+  cancel-in-progress: false
+
+jobs:
+  bulk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APP_URL: ${{ secrets.APP_URL }}
+      ADMIN_ACCESS_KEY: ${{ secrets.ADMIN_ACCESS_KEY }}
+      TOTAL: ${{ inputs.total }}
+      PER_REQUEST: ${{ inputs.per_request }}
+      CONCURRENCY: ${{ inputs.concurrency }}
+    steps:
+      - name: Analyze the backlog in bounded waves
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL secret is not set — nothing to do."
+            echo "Set APP_URL and ADMIN_ACCESS_KEY in Repository Secrets, then re-run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+
+          base = os.environ["APP_URL"].rstrip("/")
+          key = os.environ.get("ADMIN_ACCESS_KEY") or ""
+          total = max(1, int(os.environ.get("TOTAL") or 500))
+          per_request = min(500, max(1, int(os.environ.get("PER_REQUEST") or 120)))
+          concurrency = min(8, max(1, int(os.environ.get("CONCURRENCY") or 6)))
+          url = base + "/api/admin/news/queue"
+
+          attempted = analyzed = failed = skipped = requests = 0
+          remaining = None
+          lines = []
+          started = time.time()
+
+          while attempted < total:
+              body = json.dumps(
+                  {
+                      "action": "analyze_backlog",
+                      "limit": min(per_request, total - attempted),
+                      "concurrency": concurrency,
+                  }
+              ).encode()
+              request = urllib.request.Request(url, data=body, method="POST", headers={"content-type": "application/json"})
+              if key:
+                  request.add_header("x-admin-key", key)
+
+              requests += 1
+              try:
+                  with urllib.request.urlopen(request, timeout=300) as response:
+                      data = json.loads(response.read().decode())
+              except Exception as error:  # noqa: BLE001 - report and stop, never loop on a dead host
+                  lines.append(f"❌ request {requests} failed: {error}")
+                  break
+
+              if not data.get("success"):
+                  lines.append(f"❌ request {requests}: {data.get('message') or data}")
+                  break
+
+              attempted += int(data.get("attempted") or 0)
+              analyzed += int(data.get("analyzed") or 0)
+              failed += int(data.get("failed") or 0)
+              skipped += int(data.get("skippedOfftopic") or 0)
+              remaining = data.get("remainingReady")
+              lines.append(
+                  f"request {requests}: analyzed {data.get('analyzed')} · offtopic {data.get('skippedOfftopic')} · "
+                  f"failed {data.get('failed')} · stop={data.get('stopReason')} · remaining={remaining}"
+              )
+              print(lines[-1], flush=True)
+
+              if data.get("stopReason") == "queue_empty" or not data.get("attempted"):
+                  lines.append("queue is empty — done")
+                  break
+              if data.get("firstError"):
+                  lines.append(f"first error: {data['firstError']}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          rate = round(analyzed / max(0.1, (time.time() - started) / 60))
+          report = (
+              f"### Bulk analysis — {analyzed} articles analyzed in {requests} requests\n"
+              f"- attempted: {attempted} · offtopic skipped: {skipped} · failed: {failed}\n"
+              f"- pace: ~{rate}/min · remaining READY_FOR_AI: {remaining}\n"
+              f"- nothing was sent; publishing stays policy-driven\n\n"
+              + "\n".join(f"- {line}" for line in lines[-12:])
+              + "\n"
+          )
+          print(report)
+          if summary:
+              with open(summary, "a") as handle:
+                  handle.write(report)
+          PY

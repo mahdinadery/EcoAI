@@ -22,6 +22,13 @@ type QueueActionResponse = {
   requeued?: number;
   remainingReady?: number;
   remainingReadyToSend?: number;
+  attempted?: number;
+  target?: number;
+  concurrency?: number;
+  inFlight?: number;
+  stopReason?: string;
+  /** Rows still analyzable (READY_FOR_AI + sidelined + failed), not just READY_FOR_AI. */
+  remainingQueue?: number;
   firstError?: string | null;
   message?: string;
   detail?: string;
@@ -38,6 +45,9 @@ export function NewsQueueToolbar({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [autoDraining, setAutoDraining] = useState(false);
   const stopRef = useRef(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkConcurrency, setBulkConcurrency] = useState(6);
+  const bulkStopRef = useRef(false);
   const [liveReadyOverride, setLiveReadyOverride] = useState<number | null>(null);
   const [liveSendOverride, setLiveSendOverride] = useState<number | null>(null);
   const [banner, setBanner] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
@@ -61,7 +71,7 @@ export function NewsQueueToolbar({
   }
 
   async function handleSingleAction(action: string, payload: Record<string, unknown>, label: string) {
-    if (busyAction || autoDraining) return;
+    if (busyAction || autoDraining || bulkRunning) return;
     setBusyAction(action);
     setBanner(null);
 
@@ -131,12 +141,85 @@ export function NewsQueueToolbar({
     }
   }
 
+  /**
+   * Continuous bulk analysis: fires the bounded `analyze_backlog` requests one
+   * after another, several articles at a time, until the queue is empty or the
+   * operator stops. Deliberately analysis-only — sending stays policy-driven, so
+   * burning spare token quota can never push an unreviewed article to the channel.
+   */
+  async function handleBulkAnalyze() {
+    if (bulkRunning) {
+      bulkStopRef.current = true;
+      return;
+    }
+    if (busyAction || autoDraining) return;
+
+    bulkStopRef.current = false;
+    setBulkRunning(true);
+    const startedMs = Date.now();
+    let totalAnalyzed = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+    let lastError: string | null = null;
+
+    try {
+      for (let round = 1; round <= 40; round += 1) {
+        if (bulkStopRef.current) break;
+
+        const data = await callQueueApi({ action: "analyze_backlog", limit: 120, concurrency: bulkConcurrency });
+        if (!data.success) {
+          setBanner({
+            tone: "err",
+            text: `${data.message ?? "تحلیل انبوه متوقف شد."}${data.detail ? ` (${data.detail})` : ""}`,
+          });
+          break;
+        }
+
+        totalAnalyzed += data.analyzed ?? 0;
+        totalFailed += data.failed ?? 0;
+        totalSkipped += data.skippedOfftopic ?? 0;
+        lastError = data.firstError ?? lastError;
+        if (typeof data.remainingReady === "number") setLiveReadyOverride(data.remainingReady);
+
+        const ratePerMin = Math.round(totalAnalyzed / Math.max(0.15, (Date.now() - startedMs) / 60_000));
+        setBanner({
+          tone: totalFailed > 0 && totalAnalyzed === 0 ? "err" : "ok",
+          text:
+            `تحلیل انبوه… ${totalAnalyzed.toLocaleString("fa-IR")} مقاله (~${ratePerMin.toLocaleString("fa-IR")} در دقیقه)، ` +
+            `${totalSkipped.toLocaleString("fa-IR")} غیرمرتبط، ${totalFailed.toLocaleString("fa-IR")} خطا` +
+            (lastError ? ` — ${lastError}` : "") +
+            ` · درخواست‌ها را با «توقف» می‌توانید قطع کنید؛ ارسال خودکار در همین حال به کارش می‌رسد.`,
+        });
+        router.refresh();
+
+        if (data.stopReason === "queue_empty" || (data.remainingQueue ?? 1) === 0 || (data.attempted ?? 0) === 0) {
+          setBanner({
+            tone: "ok",
+            text: `تحلیل انبوه تمام شد ✓ ${totalAnalyzed.toLocaleString("fa-IR")} مقاله تحلیل شد` +
+              `${totalSkipped ? ` و ${totalSkipped.toLocaleString("fa-IR")} غیرمرتبط کنار گذاشته شد` : ""}` +
+              `${totalFailed ? ` و ${totalFailed.toLocaleString("fa-IR")} خطا داشت` : ""}. برای ارسال، دکمهٔ «ارسال همهٔ مقالات مرتبط…» یا سیاست ارسال خودکار را استفاده کنید.`,
+          });
+          break;
+        }
+      }
+    } catch {
+      setBanner({
+        tone: "warn",
+        text: `ارتباط موقتاً قطع شد (${totalAnalyzed.toLocaleString("fa-IR")} مقاله تحلیل شده بود). دوباره بزنید تا از همان‌جا ادامه می‌کند.`,
+      });
+    } finally {
+      setBulkRunning(false);
+      bulkStopRef.current = false;
+      router.refresh();
+    }
+  }
+
   async function handleAutoDrain() {
     if (autoDraining) {
       stopRef.current = true;
       return;
     }
-    if (busyAction) return;
+    if (busyAction || bulkRunning) return;
 
     stopRef.current = false;
     setAutoDraining(true);
@@ -219,6 +302,8 @@ export function NewsQueueToolbar({
           </h2>
           <p className="mt-1 text-xs leading-5 text-muted">
             مقالات بدون محدودیت تاریخ، به ترتیب ورود تحلیل و در صورت واجد شرایط بودن ارسال می‌شوند. در صورت خطا، صف منتظر تلاش مجدد مقالهٔ قبلی می‌ماند.
+            «تحلیل انبوه» همان صف را بیرون از نوبت و چندتا‌چندتا تحلیل می‌کند (سقف هر درخواست ~۱۲۰ مقاله، ~۱۰ برابر سریع‌تر) و هیچ پیامی ارسال
+            نمی‌کند — مناسب وقتی ظرفیت توکن اضافه دارید و می‌خواهید انباشت را زودتر تحلیل کنید.
             {!topicFilterActive
               ? " پیشنهاد می‌شود «فیلتر موضوعی اقتصاد AI» را فعال کنید تا فقط مقالات مرتبط تحلیل شوند."
               : ""}
@@ -228,7 +313,7 @@ export function NewsQueueToolbar({
         <div className="flex flex-wrap items-center gap-2">
           <button
             className="rounded-xl border border-ok-line bg-ok-soft px-3.5 py-2 text-xs font-bold text-ok-ink shadow-sm transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={Boolean(busyAction) || autoDraining}
+            disabled={Boolean(busyAction) || autoDraining || bulkRunning}
             onClick={() => handleSingleAction("send_ready_to_bale", { limit: 15 }, "ارسال به بله")}
             type="button"
           >
@@ -252,7 +337,7 @@ export function NewsQueueToolbar({
 
           <button
             className="rounded-xl border border-accent bg-accent-soft px-3.5 py-2 text-xs font-bold text-accent-ink transition-colors hover:bg-accent hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={Boolean(busyAction) || autoDraining}
+            disabled={Boolean(busyAction) || autoDraining || bulkRunning}
             onClick={() => handleSingleAction("analyze_batch", { limit: 15 }, "تحلیل سریع ۱۵ مقاله")}
             type="button"
           >
@@ -260,8 +345,40 @@ export function NewsQueueToolbar({
           </button>
 
           <button
-            className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-60"
+            className={`rounded-xl px-3.5 py-2 text-xs font-bold transition-colors ${
+              bulkRunning
+                ? "border border-danger-line bg-danger-soft text-danger-ink"
+                : "border border-accent bg-accent-soft text-accent-ink shadow-sm hover:bg-accent hover:text-white"
+            } disabled:cursor-not-allowed disabled:opacity-60`}
             disabled={Boolean(busyAction) || autoDraining}
+            onClick={handleBulkAnalyze}
+            type="button"
+          >
+            {bulkRunning
+              ? "توقف تحلیل انبوه"
+              : `تحلیل انبوه صف — ${bulkConcurrency} مقاله هم‌زمان (بدون ارسال)`}
+          </button>
+
+          <label className="flex items-center gap-1.5 text-[11px] text-muted">
+            <span>هم‌زمانی</span>
+            <select
+              aria-label="تعداد تحلیل هم‌زمان"
+              className="rounded-lg border border-line bg-surface p-1.5 text-xs disabled:opacity-60"
+              disabled={Boolean(busyAction) || autoDraining || bulkRunning}
+              onChange={(event) => setBulkConcurrency(Number(event.target.value))}
+              value={bulkConcurrency}
+            >
+              {[2, 4, 6, 8].map((value) => (
+                <option key={value} value={value}>
+                  {value}×
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={Boolean(busyAction) || autoDraining || bulkRunning}
             onClick={() => handleSingleAction("apply_ai_pack_filter", {}, "فعال‌سازی فیلتر موضوعی اقتصاد AI")}
             type="button"
           >
@@ -273,7 +390,7 @@ export function NewsQueueToolbar({
           {failedCount > 0 ? (
             <button
               className="rounded-xl border border-warn-line bg-warn-soft px-3 py-2 text-xs font-medium text-warn-ink transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={Boolean(busyAction) || autoDraining}
+              disabled={Boolean(busyAction) || autoDraining || bulkRunning}
               onClick={() => handleSingleAction("retry_failed", {}, "بازگردانی همهٔ خطاها")}
               type="button"
             >

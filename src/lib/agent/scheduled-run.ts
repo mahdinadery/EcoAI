@@ -16,6 +16,7 @@ import { getActiveAiConfig, readActiveOperationalSettings } from "@/lib/ai/confi
 import { synthesizeBulletinBrief } from "@/lib/ai/bulletin-brief";
 import { sendBulletinDelivery } from "@/lib/delivery";
 import { buildBulletinMessage, resolveBulletinSettings, MAX_BULLETIN_ITEMS, pickBulletinItems } from "@/lib/delivery/bulletin";
+import { bulletinLookbackDays } from "./schedule";
 import { diagnoseDbError } from "@/lib/admin/db-errors";
 import { expandTargets } from "@/lib/delivery/types";
 import { drainArticleQueue, type ArticleQueueResult } from "@/lib/news/article-queue";
@@ -104,11 +105,27 @@ export async function selectSendCandidates(
 }
 
 /**
- * Rule-matching, never-delivered articles ranked for the digest (top 5).
+ * How many entries the digest may hold. Defaults to 5 but follows the operator's
+ * `bulletin.maxItems`, so a weekly issue can legitimately carry eight or ten
+ * items without anyone having to touch code.
+ */
+async function digestItemCap(): Promise<number> {
+  const aiConfig = await getActiveAiConfig();
+  return resolveBulletinSettings(aiConfig.decisionRules.bulletin).maxItems;
+}
+
+/**
+ * Rule-matching, never-delivered articles ranked for the digest.
  * Research papers are NOT restricted to today's calendar date (`publishedAt = today`).
+ *
+ * `bulletinDays` adds a window (see `bulletinLookbackDays`): a weekly issue reads
+ * the last seven days and nothing older, so an unread backlog from last month
+ * cannot dilute "this week's news".
  */
 async function selectBulletinCandidates(config: AgentScheduleConfig): Promise<NewsRow[]> {
   const rule = await applyActiveSendFloors(scheduleToRule(config));
+  const windowDays = bulletinLookbackDays(config.bulletinDays);
+  const since = windowDays > 0 ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000) : null;
   const rows = await db
     .select()
     .from(news)
@@ -117,6 +134,8 @@ async function selectBulletinCandidates(config: AgentScheduleConfig): Promise<Ne
         isNotNull(news.analyzedAt),
         sql`coalesce(${news.summary}, '') <> ''`,
         sql`${news.status} NOT IN ('DUPLICATE', 'SKIPPED_OFFTOPIC')`,
+        // Weekly cadence: only the covered period, never the whole archive.
+        since ? sql`coalesce(${news.publishedAt}, ${news.createdAt}) >= ${since}` : undefined,
         notExists(
           db
             .select({ one: sql`1` })
@@ -138,7 +157,7 @@ async function selectBulletinCandidates(config: AgentScheduleConfig): Promise<Ne
       evaluateArticle(row, rule).matches ||
       (row.shouldSend === true && (row.importanceScore ?? 0) >= 50 && (row.relevanceScore ?? 0) >= 50),
   );
-  return pickBulletinItems(matching, MAX_BULLETIN_ITEMS);
+  return pickBulletinItems(matching, Math.max(MAX_BULLETIN_ITEMS, await digestItemCap()));
 }
 
 /** "both" mode: items already sent to the destination since the last bulletin. */
@@ -173,7 +192,7 @@ async function selectRecapItems(config: AgentScheduleConfig): Promise<NewsRow[]>
       evaluateArticle(item, scheduleToRule(config)).matches ||
       (item.shouldSend === true && (item.importanceScore ?? 0) >= 50 && (item.relevanceScore ?? 0) >= 50),
   );
-  return pickBulletinItems(qualifying, MAX_BULLETIN_ITEMS);
+  return pickBulletinItems(qualifying, Math.max(MAX_BULLETIN_ITEMS, await digestItemCap()));
 }
 
 /** Builds the digest (AI intro + minimal columns) and sends it as ONE message. */
@@ -221,7 +240,11 @@ async function sendBulletin(
     { model: aiConfig.model, enabled: bulletin.aiIntro, introPrompt: bulletin.introPrompt, maxTokens: bulletin.introMaxTokens },
   );
 
+  const windowDays = bulletinLookbackDays(config.bulletinDays);
   const text = buildBulletinMessage({
+    // A weekly issue labels its header with the covered range («۸ آبان تا ۱۴ آبان»)
+    // instead of a single date, so nobody mistakes it for the daily bulletin.
+    windowStart: windowDays > 0 ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000) : null,
     settings: bulletin,
     intro,
     items: items.map((item) => ({
@@ -285,7 +308,7 @@ async function runBulletinPhase(
     const recaps = await selectRecapItems(config);
     const fresh = await selectBulletinCandidates(config);
     const uniqueById = [...new Map([...recaps, ...fresh].map((item) => [item.id, item])).values()];
-    const combined = pickBulletinItems(uniqueById, MAX_BULLETIN_ITEMS);
+    const combined = pickBulletinItems(uniqueById, Math.max(MAX_BULLETIN_ITEMS, await digestItemCap()));
     if (combined.length > 0) {
       return { summary: await sendBulletin(config, combined, { recordRows: true, recordIds: fresh.map(item => item.id), trigger }) };
     }

@@ -386,6 +386,9 @@ export const agentSchedules = pgTable("agent_schedules", {
   publishMode: text("publish_mode").notNull().default("single"),
   // Local HH:MM times the bulletin is published at (independent of `times`).
   bulletinTimes: jsonb("bulletin_times").notNull().$type<string[]>().default(sql`'["08:00","14:00"]'::jsonb`),
+  // Weekdays the bulletin may publish on (JS convention: 0 = Sunday … 6 =
+  // Saturday). NULL = every day (historical behaviour); [5] = weekly on Fridays.
+  bulletinDays: jsonb("bulletin_days").$type<number[] | null>(),
   lastBulletinSlot: text("last_bulletin_slot"),
   lastBulletinAt: timestamp("last_bulletin_at", { withTimezone: true, mode: "date" }),
   // Liveness heartbeat: stamped on EVERY external-cron tick call (even no-ops),

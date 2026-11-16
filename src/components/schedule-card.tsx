@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildIntervalTimes, detectInterval, intervalLabel } from "@/lib/agent/interval-times";
+import { BULLETIN_WEEKDAY_ORDER, WEEKDAY_LABELS_FA } from "@/lib/agent/schedule";
 import { describeRejectionReasons } from "@/lib/agent/rejection-reasons";
 import { diagnoseRunSummary } from "@/lib/agent/run-diagnosis";
 import { StatusBadge } from "./status-badge";
@@ -25,6 +26,11 @@ type ScheduleConfig = {
   gapSearchQueries: string[];
   publishMode: PublishMode;
   bulletinTimes: string[];
+  /**
+   * Weekday numbers the digest may publish on (0 = Sunday … 6 = Saturday).
+   * `null` => every day; `[5]` => weekly, Fridays only.
+   */
+  bulletinDays: number[] | null;
 };
 
 type RunSummary = {
@@ -81,6 +87,11 @@ type ApiResponse = {
     running?: boolean;
     lastTickAt?: string | null;
     cronStale?: boolean;
+    nextBulletinAt?: string | null;
+    lastBulletinAt?: string | null;
+    lastBulletinSlot?: string | null;
+    bulletinCadence?: string;
+    bulletinWindowDays?: number;
   };
   destinationsReady?: { local: boolean; bale: boolean };
   baleMissing?: string[];
@@ -148,6 +159,7 @@ function defaultConfig(): ScheduleConfig {
     gapSearchQueries: [],
     publishMode: "single",
     bulletinTimes: ["08:00", "14:00"],
+    bulletinDays: null,
   };
 }
 
@@ -157,6 +169,8 @@ function normalizeLoadedConfig(config: ScheduleConfig): ScheduleConfig {
     ...config,
     gapSearchQueries: config.gapSearchQueries ?? [],
     bulletinTimes: config.bulletinTimes ?? ["08:00", "14:00"],
+    // Older saved configs simply have no day list => "every day".
+    bulletinDays: Array.isArray(config.bulletinDays) && config.bulletinDays.length > 0 ? config.bulletinDays : null,
   };
 }
 
@@ -1009,6 +1023,46 @@ export function ScheduleCard({
                 >
                   + افزودن ساعت
                 </button>
+              </div>
+
+              {/* Day picker: an empty selection is "هر روز" (the daily bulletin the
+                  product shipped with); selecting e.g. only «جمعه» makes it a
+                  weekly digest. Only the bulletin is gated — single sends and the
+                  manual «ارسال فوری بولتن» below always work. */}
+              <div className="mt-3">
+                <span className="mb-1 block text-xs font-medium text-ink-soft">
+                  روزهای انتشار بولتن (خالی = هر روز)
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {BULLETIN_WEEKDAY_ORDER.map((day) => {
+                    const selected = config.bulletinDays?.includes(day) ?? false;
+                    return (
+                      <button
+                        aria-pressed={selected}
+                        className={
+                          "rounded-full border px-2.5 py-1 text-xs transition-colors " +
+                          (selected
+                            ? "border-accent bg-accent text-white"
+                            : "border-line text-muted hover:bg-surface-2")
+                        }
+                        key={day}
+                        onClick={() => {
+                          const current = config.bulletinDays ?? [];
+                          const next = selected ? current.filter((value) => value !== day) : [...current, day];
+                          setConfig({ ...config, bulletinDays: next.length > 0 ? next.sort((a, b) => a - b) : null });
+                        }}
+                        type="button"
+                      >
+                        {WEEKDAY_LABELS_FA[day]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1.5 text-[11px] leading-5 text-faint">
+                  با انتخاب روز، بولتن دوره‌ای می‌شود و فقط خبرهای همان بازه را پوشش می‌دهد (هفتگی = ۷ روز اخیر)؛
+                  «ارسال فوری بولتن» این انتخاب را دور می‌زند.
+                  {status?.nextBulletinAt ? ` بولتن بعدی: ${formatInZone(status.nextBulletinAt, config.timezone)}.` : ""}
+                </p>
               </div>
 
               <button

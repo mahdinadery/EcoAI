@@ -61,6 +61,7 @@ function toRecord(row: AgentScheduleRow): AgentScheduleRecord {
       gapSearchQueries: row.gapSearchQueries,
       publishMode: row.publishMode,
       bulletinTimes: row.bulletinTimes,
+      bulletinDays: row.bulletinDays ?? null,
     }),
   };
 }
@@ -94,6 +95,8 @@ function valuesFor(config: AgentScheduleConfig) {
     gapSearchQueries: config.gapSearchQueries ?? [],
     publishMode: config.publishMode,
     bulletinTimes: config.bulletinTimes,
+    // jsonb, nullable on purpose: null => "every day" (see schema.ts).
+    bulletinDays: config.bulletinDays && config.bulletinDays.length > 0 ? config.bulletinDays : null,
     updatedAt: new Date(),
   };
 }

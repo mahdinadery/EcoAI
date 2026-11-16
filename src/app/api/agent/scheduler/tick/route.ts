@@ -81,12 +81,28 @@ export async function POST(request: Request) {
       nextRunAt: next?.at.toISOString() ?? null,
       nextRunSlot: next?.slotKey ?? null,
       nextBulletinAt: nextBulletin?.at.toISOString() ?? null,
+      bulletinReason: bulletinDue.due ? "due" : bulletinDue.reason,
+      nextBulletinSlot: nextBulletin?.slotKey ?? null,
       message:
-        due.reason === "disabled"
+        due.reason === "disabled" && bulletinDue.reason === "disabled"
           ? "زمان‌بندی خودکار خاموش است."
-          : due.reason === "already_ran"
-            ? "این نوبت قبلاً اجرا شده است."
-            : "هنوز زمان اجرای نوبت نرسیده است.",
+          : bulletinDue.reason === "not_scheduled_day"
+            ? // Weekly digest, wrong day: say so instead of the generic "not due
+              // yet", which is what made the Friday-only bulletin look broken.
+              "امروز روز انتشار بولتن نیست. " +
+              (nextBulletin
+                ? `نوبت بعدی: ${new Date(nextBulletin.at).toLocaleString("fa-IR", {
+                    timeZone: config.timezone,
+                    weekday: "long",
+                    day: "numeric",
+                    month: "long",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}.`
+                : "")
+            : due.reason === "already_ran"
+              ? "این نوبت قبلاً اجرا شده است."
+              : "هنوز زمان اجرای نوبت نرسیده است.",
     });
   }
 

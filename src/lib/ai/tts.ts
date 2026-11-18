@@ -23,6 +23,7 @@ import {
   buildGeminiPayload,
   buildOpenAiPayload,
   clampTtsText,
+  classifyTtsProviderError,
   parsePcmSampleRate,
   redactTtsSecret,
   resolveTtsCapability,
@@ -61,7 +62,13 @@ export type TtsResult =
       ok: false;
       kind: "not_configured" | "unsupported_route" | "http_error" | "empty" | "network";
       status?: number;
+      /** What the provider's reply actually means (see `classifyTtsProviderError`). */
+      code?: import("./tts-core").TtsFailureCode;
+      /** A clickable fix when the provider named one (e.g. the console enable-link). */
+      actionUrl?: string | null;
       message: string;
+      /** The provider's own line, HTML-stripped and secret-redacted. */
+      detail?: string;
     };
 
 /**
@@ -108,26 +115,6 @@ export function buildTtsRequest(
     body: JSON.stringify(buildOpenAiPayload(capability, text)),
     isJsonReply: false,
   };
-}
-
-/**
- * A provider error is turned into a short, safe Persian-first reason here: never a
- * body dump, never the key (the Gemini URL carries `?key=` and providers echo the
- * URL back inside their own error text).
- */
-function extractReason(status: number, statusText: string, body: string): string {
-  const cleaned = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-  if (cleaned) {
-    try {
-      const parsed = JSON.parse(cleaned) as { error?: { message?: string }; message?: string };
-      const message = parsed?.error?.message ?? parsed?.message;
-      if (message) return redactTtsSecret(`خطای سرویس صوتی (${status}): ${message}`);
-    } catch {
-      // Not JSON — the raw line is still more useful than a status code alone.
-    }
-    return redactTtsSecret(`خطای سرویس صوتی (${status}): ${cleaned.slice(0, 200)}`);
-  }
-  return `سرویس صوتی با کد ${status}${statusText ? ` ${statusText}` : ""} پاسخ داد.`;
 }
 
 /** Decode either reply shape into bytes. Throws a short, redacted, actionable error. */
@@ -230,11 +217,15 @@ export async function synthesizeSpeech(text: string, options: SynthesizeOptions 
 
   if (!response.ok) {
     const body = typeof response.text === "function" ? await response.text().catch(() => "") : "";
+    const failure = classifyTtsProviderError(response.status, body);
     return {
       ok: false,
       kind: "http_error",
       status: response.status,
-      message: extractReason(response.status, String(response.statusText ?? ""), body),
+      code: failure.code,
+      actionUrl: failure.actionUrl,
+      message: failure.messageFa,
+      detail: failure.providerMessage || `${response.status} ${String(response.statusText ?? "")}`.trim(),
     };
   }
 
@@ -259,10 +250,17 @@ export async function synthesizeSpeech(text: string, options: SynthesizeOptions 
           : 0,
     };
   } catch (error) {
+    // A gateway can also answer 200 with an error object inside; classify it the
+    // same way so the operator still gets a fix instead of a pasted JSON body.
+    const raw = error instanceof Error ? error.message : String(error);
+    const failure = classifyTtsProviderError(200, raw);
     return {
       ok: false,
       kind: "http_error",
-      message: redactTtsSecret(error instanceof Error ? error.message : String(error)),
+      code: failure.code,
+      actionUrl: failure.actionUrl,
+      message: failure.code === "unknown" ? redactTtsSecret(raw) : failure.messageFa,
+      detail: failure.providerMessage || redactTtsSecret(raw),
     };
   }
 }

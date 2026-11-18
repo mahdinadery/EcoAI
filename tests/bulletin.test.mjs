@@ -396,6 +396,7 @@ const weeklySample = (index) =>
     entityTags: ["دفتر ملی پژوهش‌های اقتصادی آمریکا"],
     corroborated: true,
     corroborationSources: ["NBER", "VoxEU"],
+    affiliations: ["University of Oxford", "Google DeepMind"],
   });
 
 const renderWeekly = (settings, count = 8) =>
@@ -404,7 +405,9 @@ const renderWeekly = (settings, count = 8) =>
     items: Array.from({ length: count }, (_, index) => weeklySample(index + 1)),
     generatedAt: new Date("2026-11-13T06:00:00Z"),
     timezone: "Asia/Tehran",
-    settings,
+    // `maxItems` follows the item count so the layout, not the preset's own cap,
+    // is what these size assertions measure.
+    settings: { ...settings, maxItems: count },
   });
 
 test("the weekly bulletin preset is valid, clamped and editorial-neutral", () => {
@@ -412,6 +415,7 @@ test("the weekly bulletin preset is valid, clamped and editorial-neutral", () =>
   assert.equal(preset.maxItems, 8);
   assert.equal(preset.showSummary, false);
   assert.equal(preset.showPublisher, true);
+  assert.ok(preset.itemTemplate.includes("{affiliationsBlock}"), preset.itemTemplate);
   assert.equal(preset.showEntities, false);
   assert.deepEqual(validateBulletinSettings(preset), []);
 
@@ -431,7 +435,60 @@ test("weekly preset: eight full items fit one Bale message, summaries would not"
   assert.ok(weekly.includes("چرا مهم است:"), weekly);
   assert.equal(weekly.includes("این یادداشت با دادهٔ پنل"), false, "the preset drops the summary line");
 
+  // Ten items with the affiliations line is where the layout stops fitting, which
+  // is why the preset caps the weekly issue at eight.
+  const wide = renderWeekly(applyWeeklyBulletinPreset(), 10);
+  assert.ok(wide.length > BALE_MESSAGE_LIMIT, `preset at 10 items: ${wide.length} chars`);
+  assert.equal(splitBaleMessage(wide).length, 2);
+
   const full = renderWeekly({ ...DEFAULT_BULLETIN_SETTINGS, maxItems: 8 });
   assert.ok(full.length > BALE_MESSAGE_LIMIT, `full layout measured at ${full.length} chars`);
   assert.equal(splitBaleMessage(full).length, 2, "the same eight items with summaries overflow");
+});
+
+test("affiliations render as their own line and are off unless asked", () => {
+  const off = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv: cs.CL", affiliations: ["UC Berkeley", "MIT"] })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  assert.equal(off.includes("\ud83c\udf93"), false, "no OpenAlex call implied by the default layout");
+  assert.ok(off.includes("\ud83c\udfdb\ufe0f arXiv: cs.CL"), off);
+
+  const on = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv: cs.CL", affiliations: ["UC Berkeley", "MIT"] })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { showAffiliations: true },
+  });
+  assert.ok(on.includes("\ud83c\udf93 UC Berkeley \u00b7 MIT"), on);
+  // Institutions come after the venue line, and the two are never merged.
+  const lines = on.split("\n");
+  const venueLine = lines.findIndex((line) => line.includes("arXiv: cs.CL"));
+  assert.equal(lines[venueLine + 1], "\ud83c\udf93 UC Berkeley \u00b7 MIT");
+
+  const empty = buildBulletinMessage({
+    intro: null,
+    items: [item({ affiliations: [] })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { showAffiliations: true },
+  });
+  assert.equal(empty.includes("\ud83c\udf93"), false, "no dangling label when nothing resolved");
+});
+
+test("affiliations are template variables and three items is the cap", () => {
+  const text = buildBulletinMessage({
+    intro: null,
+    items: [item({ affiliations: ["A University", "B Lab", "C Institute", "D School"] })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { showAffiliations: true, itemTemplate: "{number} {title}\n{affiliations}\n[{affiliationsBlock}]\n{originalUrl}" },
+  });
+  assert.ok(text.includes("A University · B Lab · C Institute"), text);
+  assert.equal(text.includes("D School"), false, "a four-author roster does not stretch the line");
+  assert.deepEqual(validateBulletinSettings({ itemTemplate: "{affiliations} {affiliationsBlock}" }), []);
+  assert.equal(validateBulletinSettings({ showAffiliations: 1 }).length, 1);
 });

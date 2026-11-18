@@ -38,6 +38,8 @@ export const BULLETIN_ITEM_TEMPLATE_VARS = [
   "entitiesBlock",
   "publisher",
   "publisherBlock",
+  "affiliations",
+  "affiliationsBlock",
   "author",
   "sources",
   "originalUrl",
@@ -46,7 +48,7 @@ export const BULLETIN_ITEM_TEMPLATE_VARS = [
 ] as const;
 export const DEFAULT_BULLETIN_TEMPLATE = "🗞️ {title} — {date}\n\n{intro}\n\n{items}";
 export const DEFAULT_BULLETIN_ITEM_TEMPLATE =
-  "{number} {bilingualTitle}\n{publisherBlock}\n{summary}\n{whyBlock}\n{entitiesBlock}\n{sources}\n{originalUrl}\n{hashtags}";
+  "{number} {bilingualTitle}\n{publisherBlock}\n{affiliationsBlock}\n{summary}\n{whyBlock}\n{entitiesBlock}\n{sources}\n{originalUrl}\n{hashtags}";
 
 export function unknownBulletinVariables(template: string, allowed: readonly string[]): string[] {
   return [...new Set([...template.matchAll(/\{([a-zA-Z]+)\}/g)].map((match) => match[1]).filter((key) => !allowed.includes(key)))];
@@ -66,6 +68,11 @@ export type BulletinSettings = {
   showSources: boolean;
   /** Publishing institution (feed/venue) + author byline, as a compact line. */
   showPublisher: boolean;
+  /**
+   * Authors' institutions, resolved from OpenAlex at build time. Off by default:
+   * unlike every other field it costs an outbound third-party call per item.
+   */
+  showAffiliations: boolean;
   aiIntro: boolean;
   introPrompt: string;
   introMaxTokens: number;
@@ -81,6 +88,7 @@ export const DEFAULT_BULLETIN_SETTINGS: BulletinSettings = {
   showEntities: true,
   showSources: true,
   showPublisher: true,
+  showAffiliations: false,
   aiIntro: true,
   introPrompt:
     "تو سردبیر یک بولتن تخصصی در حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) هستی. یک جمع‌بندی فارسی روان ۲ تا ۴ جمله‌ای از مقالات داده‌شده و پیامد مستندشان برای بهره‌وری، بازار کار، سرمایه‌گذاری زیرساختی و اقتصاد هوش مصنوعی بنویس. ارتباط حدسی نساز. فقط متن جمع‌بندی فارسی، بدون عنوان یا فهرست یا Markdown.",
@@ -110,9 +118,11 @@ export const WEEKLY_BULLETIN_PRESET: Partial<BulletinSettings> = {
   showSummary: false,
   showWhy: true,
   showPublisher: true,
+  showAffiliations: true,
   showEntities: false,
   showSources: false,
-  itemTemplate: "{number} {bilingualTitle}\n{publisherBlock}\n{whyBlock}\n{originalUrl}",
+  itemTemplate:
+    "{number} {bilingualTitle}\n{publisherBlock}\n{affiliationsBlock}\n{whyBlock}\n{originalUrl}",
 };
 
 /** `WEEKLY_BULLETIN_PRESET` merged over the current settings (clamped + typed). */
@@ -152,7 +162,7 @@ export function validateBulletinSettings(value: unknown): string[] {
     errors.push("سقف توکن مقدمه باید ۵۰ تا ۵۰۰ باشد.");
   if (settings.introPrompt !== undefined && (typeof settings.introPrompt !== "string" || !settings.introPrompt.trim() || settings.introPrompt.length > 4000))
     errors.push("دستور مقدمه باید یک تا ۴۰۰۰ نویسه باشد.");
-  for (const key of ["showSummary", "showWhy", "showEntities", "showSources", "showPublisher", "aiIntro"] as const) {
+  for (const key of ["showSummary", "showWhy", "showEntities", "showSources", "showPublisher", "showAffiliations", "aiIntro"] as const) {
     if (settings[key] !== undefined && typeof settings[key] !== "boolean")
       errors.push(`گزینه بولتن ${key} باید روشن یا خاموش باشد.`);
   }
@@ -187,6 +197,12 @@ export type BulletinItem = {
   publisher?: string | null;
   /** Author byline as carried by the feed, when there is one. */
   author?: string | null;
+  /**
+   * Institutions the authors work for (OpenAlex `authorships[].institutions`),
+   * best-effort and already ordered — corresponding author first. Empty when the
+   * article is not an arXiv paper, is too new to be indexed, or the lookup failed.
+   */
+  affiliations?: string[];
 };
 
 /**
@@ -373,6 +389,10 @@ export function buildBulletinMessage(args: {
     }
     const publisherLine = settings.showPublisher ? formatPublisherLine(item) : "";
     if (publisherLine) lines.push(publisherLine);
+    const affiliationNames = compact((item.affiliations ?? []).slice(0, 3).join(" · "), 160);
+    const affiliationsBlock =
+      settings.showAffiliations && affiliationNames ? `🎓 ${escapeMd(affiliationNames)}` : "";
+    if (affiliationsBlock) lines.push(affiliationsBlock);
     const oneLiner = compactSummaryForBulletin(item.oneLiner, 520);
     if (settings.showSummary && oneLiner) lines.push(escapeMd(oneLiner));
     const why = compact(item.whyItMatters, 240);
@@ -406,6 +426,8 @@ export function buildBulletinMessage(args: {
           publisher: settings.showPublisher ? escapeMd(compact(item.publisher, 80)) : "",
           publisherBlock: publisherLine,
           author: escapeMd(compact(item.author, 70)),
+          affiliations: settings.showAffiliations ? escapeMd(affiliationNames) : "",
+          affiliationsBlock,
           sources: settings.showSources
             ? otherSources.length
               ? `تأییدشده توسط ${Math.max(2, otherSources.length + 1).toLocaleString("fa-IR")} منبع: ${otherSources.join("، ")}`

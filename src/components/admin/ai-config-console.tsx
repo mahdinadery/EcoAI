@@ -34,6 +34,7 @@ import { AiConfigTestPanel } from "./ai-config-test-panel";
 import { AiConfigTopicRow } from "./ai-config-topic-row";
 
 import { AiConfigVersionHistory } from "./ai-config-version-history";
+import { PodcastVoiceCard } from "./podcast-voice-card";
 
 /**
  * Quick-add presets plus The Economics of AI domain topics.
@@ -1075,6 +1076,9 @@ export function AiConfigConsole({ adminKey }: Props) {
 
       {/* Test Configuration */}
       <AiConfigTestPanel adminKey={adminKey} draftConfig={draft} />
+
+      {/* Podcast speech: same AI service, auditions without touching the pipeline */}
+      <PodcastVoiceCard adminKey={adminKey} />
 
       {/* Version History */}
       <AiConfigVersionHistory

@@ -10,6 +10,7 @@
 - [قرارداد تنظیمات تحلیل و پیش‌نمایش](ai-configuration-contract.md)
 - [ارزیابی آزمایشی ارتباط، اهمیت و زمان](shadow-evaluation.md)
 - [تنظیمات و قالب انتشار بولتن](bulletin-configuration.md)
+- [صدای پادکست با همان سرویس هوش مصنوعی](podcast-voice.md)
 - [پایداری و انتخاب روزانهٔ بولتن](daily-bulletin-reliability.md)
 - [هشتگ مستقل در خروجی](hashtags.md)
 - [نقشهٔ راه پروژه‌های متن‌باز](roadmap-from-oss-repos.md)

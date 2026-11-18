@@ -379,7 +379,8 @@ function defaultReasoningEffortForModel(model: string): "low" | null {
 let sharedDirectDispatcher: Dispatcher | null = null;
 const sharedProxyDispatchers = new Map<string, Dispatcher>();
 
-function getAiDispatcher(proxyUrl: string | null): Dispatcher | undefined {
+/** Shared with the speech client (`tts.ts`) so both honor `AI_PROXY_URL` alike. */
+export function getAiDispatcher(proxyUrl: string | null): Dispatcher | undefined {
   if (proxyUrl) {
     let cached = sharedProxyDispatchers.get(proxyUrl);
     if (!cached) {

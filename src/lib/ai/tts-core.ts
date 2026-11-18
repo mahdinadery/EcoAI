@@ -312,6 +312,111 @@ export function wavDurationMs(bytes: number, sampleRate = 24_000, channels = 1, 
 }
 
 /**
+ * A speech failure is nearly always one of a handful of account/endpoint states,
+ * and each one has a different fix. The provider's own status line is kept (it is
+ * the evidence), but the operator gets the actionable sentence first — the same
+ * rule this repo follows everywhere else: never invent a reason, and never make the
+ * user decode a raw HTTP body.
+ */
+export type TtsFailureCode =
+  | "service_not_enabled"
+  | "permission_denied"
+  | "model_unavailable"
+  | "quota_exhausted"
+  | "bad_request"
+  | "unknown";
+
+export type TtsFailure = {
+  code: TtsFailureCode;
+  /** Persian, actionable first sentence. */
+  messageFa: string;
+  /** A clickable fix, only when the provider itself named one. */
+  actionUrl: string | null;
+  /** The provider's own line, stripped of HTML and secrets. */
+  providerMessage: string;
+};
+
+/** First URL in a provider message — Google puts the console enable-link in there. */
+export function extractActionUrl(text: string): string | null {
+  const match = /https?:\/\/[^\s"'<>)\]]+/i.exec(text ?? "");
+  return match ? match[0].replace(/[.,;]+$/, "") : null;
+}
+
+/** Pull the provider's `error.message` out of JSON, or fall back to the whole body. */
+export function cleanProviderBody(body: string | null | undefined): string {
+  const cleaned = String(body ?? "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  try {
+    const parsed = JSON.parse(cleaned) as { error?: { message?: string }; message?: string };
+    const message = parsed?.error?.message ?? parsed?.message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  } catch {
+    // Not JSON (gateway HTML, plain text): the raw line is still the evidence.
+  }
+  return cleaned;
+}
+
+export function classifyTtsProviderError(
+  status: number,
+  body: string | null | undefined,
+): TtsFailure {
+  const provider = redactTtsSecret(cleanProviderBody(body)).slice(0, 300);
+  const haystack = `${provider} ${String(body ?? "")}`.slice(0, 4_000);
+  const actionUrl = extractActionUrl(cleanProviderBody(body));
+
+  const failure = (code: TtsFailureCode, messageFa: string, url: string | null = null): TtsFailure => ({
+    code,
+    messageFa,
+    actionUrl: url,
+    providerMessage: provider,
+  });
+
+  // "API has not been used in project N before or it is disabled" is not a code
+  // problem: the Google service is off for the project behind this key. Analysis
+  // runs on the very same host for `AQ.` keys, so it must be said out loud.
+  if (/has not been used in project|is disabled|api [a-z.-]+ is not enabled|services\.enabled|enable it by visiting/i.test(haystack)) {
+    return failure(
+      "service_not_enabled",
+      "سرویس Google این پروژه هنوز فعال نشده یا غیرفعال است (برای کلیدهای Vertex Express همان aiplatform.googleapis.com است که تحلیل هم از آن استفاده می‌کند). از پیوندِ خودِ Google دکمهٔ Enable را بزنید، چند دقیقه صبر کنید، و «بازخوانی» را امتحان کنید — تا وقتی این فعال نشود، نه تحلیل کار می‌کند نه صدا.",
+      actionUrl,
+    );
+  }
+
+  if (status === 429 || /exceeded your current quota|limit:\s*0|resource.?has.?been.?exhausted|please retry in/i.test(haystack)) {
+    return failure(
+      "quota_exhausted",
+      "سقف درخواست/توکن این کلید پر شده است (HTTP 429). برای صدا هم همان سهمیهٔ تحلیل خرج می‌شود؛ بعد از ریست شدنِ پنجرهٔ سهمیه دوباره تست کنید یا سهمیهٔ پروژه را افزایش دهید.",
+    );
+  }
+
+  if (status === 404 || /no longer available|not found for this project|does not exist|unknown model|unsupported|not supported/i.test(haystack)) {
+    return failure(
+      "model_unavailable",
+      "این endpoint نام مدل صوتی را نمی‌شناسد. برای مسیر Google همان `models/{name}` باید در پروژه فعال باشد؛ اگر از درگاه واسط استفاده می‌کنید، آن درگاه باید این مدل را سرو کند. با AI_TTS_MODEL یک مدلِ در دسترس را امتحان کنید (برای AI Studio/Vertex: gemini-2.5-flash-preview-tts).",
+    );
+  }
+
+  if (status === 401 || status === 403 || /permission|unauthorized|invalid api key|auth/i.test(haystack)) {
+    return failure(
+      "permission_denied",
+      "کلید پذیرفته نشد یا مجوز کافی ندارد (HTTP " + status + "). برای کلیدهای `AQ.` (Vertex Express) بررسی کنید پروژهٔ درست انتخاب شده و Billing فعال است؛ برای `AIza…` هم سهمیهٔ AI Studio باید باز باشد.",
+    );
+  }
+
+  if (status === 400 || status === 422) {
+    return failure(
+      "bad_request",
+      "سرویس درخواست صوتی را نپسندید (HTTP " + status + "). معمولاً نام صدا (voice) برای این مدل معتبر نیست، یا متن بیش از حد بلند است؛ مدل و صدا را از فهرست پیشنهادی بردارید و دوباره تست کنید.",
+    );
+  }
+
+  return failure(
+    "unknown",
+    "سرویس صوتی با کد HTTP " + status + " پاسخ داد؛ متنِ خودِ سرویس پایین همین پیام آورده شده است.",
+  );
+}
+
+/**
  * Providers echo the full request URL back in their `error.message`, and the Google
  * URL carries `?key=…`. Anything printed from this feature goes through here first.
  */

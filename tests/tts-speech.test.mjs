@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 
 import {
   buildGeminiPayload,
+  classifyTtsProviderError as m_classify,
+  cleanProviderBody as m_clean,
+  extractActionUrl as m_extract,
   buildOpenAiPayload,
   clampMaxChars,
   clampTtsText,
@@ -192,3 +195,75 @@ test("wiring: the probe and the test button share one admin-gated route", () => 
   assert.ok(!/API_KEY/.test(body), "never echo env values");
 });
 
+
+/**
+ * The failure an operator actually hits («Agent Platform API has not been used in
+ * project …») must come back as a fix, not as a pasted HTTP body.
+ */
+test("classifyTtsProviderError: a disabled Google service is reported as an enable step", () => {
+  const body = JSON.stringify({
+    error: {
+      code: 403,
+      message:
+        "Agent Platform API has not been used in project 132831068496 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/aiplatform.googleapis.com/overview?project=132831068496 then retry. If you enabled this API recently, wait a few minutes for the action to propagate to our systems and retry.",
+    },
+  });
+  const failure = m_classify(403, body);
+  assert.equal(failure.code, "service_not_enabled");
+  assert.match(failure.messageFa, /فعال/);
+  assert.match(failure.messageFa, /تحلیل/, "the shared blast radius has to be said out loud");
+  assert.equal(
+    failure.actionUrl,
+    "https://console.developers.google.com/apis/api/aiplatform.googleapis.com/overview?project=132831068496",
+  );
+  // The provider's own words stay available as evidence.
+  assert.match(failure.providerMessage, /has not been used in project/);
+});
+
+test("classifyTtsProviderError: each class gets its own fix", () => {
+  assert.equal(m_classify(429, JSON.stringify({ error: { message: "Quota exceeded for metric: …, limit: 0" } })).code, "quota_exhausted");
+  assert.equal(
+    m_classify(404, JSON.stringify({ error: { message: "This model models/gemini-x-tts is no longer available." } })).code,
+    "model_unavailable",
+  );
+  const badRequest = m_classify(400, JSON.stringify({ error: { message: "Unsupported voice: Kore" } }));
+  assert.equal(badRequest.code, "model_unavailable", "the body, not the status, carries the meaning");
+  assert.match(badRequest.messageFa, /AI_TTS_MODEL/);
+  assert.equal(m_classify(401, JSON.stringify({ error: { message: "Invalid API key provided" } })).code, "permission_denied");
+  const boom = m_classify(500, "<html><head><title>500 Bad Gateway</title></head><body>upstream blew up</body></html>");
+  assert.equal(boom.code, "unknown");
+  assert.match(boom.providerMessage, /upstream blew up/);
+  assert.ok(!boom.providerMessage.includes("<"), "HTML must be stripped");
+  assert.equal(m_classify(502, "").code, "unknown");
+});
+
+test("classifyTtsProviderError: the key never rides along into the report", () => {
+  const leaky =
+    'Request failed for https://aiplatform.googleapis.com/v1beta1/publishers/google/models/x:generateContent?key=AIzaSyDabcdefghij1234567890ABCDEF with Bearer AQ.someSecretValueHere-123';
+  const failure = m_classify(403, leaky);
+  const all = `${failure.messageFa} ${failure.providerMessage} ${failure.actionUrl ?? ""}`;
+  for (const needle of ["AIzaSyDabcdefghij", "AQ.someSecretValueHere", "key=AIza", "Bearer AQ"]) {
+    assert.ok(!all.includes(needle), `leaked «${needle}»`);
+  }
+});
+
+test("cleanProviderBody + extractActionUrl helpers", () => {
+  assert.equal(m_clean(JSON.stringify({ error: { message: "  bad voice  " } })), "bad voice");
+  assert.equal(m_clean('{"not json'), '{"not json');
+  assert.equal(m_clean(null), "");
+  assert.equal(m_extract("see https://console.example/enable?x=1 for details"), "https://console.example/enable?x=1");
+  assert.equal(m_extract("visit https://x.example/a."), "https://x.example/a");
+  assert.equal(m_extract("no link here"), null);
+});
+
+test("route + card: the classified failure reaches the UI as code/detail/actionUrl", () => {
+  const route = readFileSync("src/app/api/ai/tts/route.ts", "utf8");
+  assert.match(route, /code: result\.code/);
+  assert.match(route, /detail: result\.detail/);
+  assert.match(route, /actionUrl: result\.actionUrl/);
+  const card = readFileSync("src/components/admin/podcast-voice-card.tsx", "utf8");
+  assert.match(card, /meta\?\.actionUrl/);
+  assert.match(card, /target="_blank"/);
+  assert.match(card, /rel="noreferrer noopener"/);
+  assert.match(card, /meta\?\.detail/);
+});

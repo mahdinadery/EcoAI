@@ -32,6 +32,12 @@ type Capability = {
 type SampleResult = {
   ok: boolean;
   message?: string;
+  /** Machine-readable class from `classifyTtsProviderError` (e.g. service_not_enabled). */
+  code?: string | null;
+  /** The provider's own sentence, stripped and redacted. */
+  detail?: string | null;
+  /** A fix link the provider itself supplied. */
+  actionUrl?: string | null;
   chars?: number;
   bytes?: number;
   truncated?: boolean;
@@ -121,6 +127,7 @@ export function PodcastVoiceCard({ adminKey }: { adminKey: string }) {
         // Any non-audio reply is the JSON error envelope: show the provider's own
         // reason (already redacted server-side), never a generic "something failed".
         const data = (await response.json().catch(() => null)) as SampleResult | null;
+        // `meta` carries the classified failure, which is what renders the fix link.
         setMeta(data);
         setError(
           String(
@@ -277,10 +284,29 @@ export function PodcastVoiceCard({ adminKey }: { adminKey: string }) {
               </a>
             </div>
           ) : null}
-          {error ? (
-            <p className="rounded-xl border border-danger-line bg-danger-soft p-3 text-sm text-danger-ink">
-              {error}
-            </p>
+          {error || meta?.code ? (
+            <div className="space-y-2 rounded-xl border border-danger-line bg-danger-soft p-3 text-sm text-danger-ink">
+              <p className="leading-6">{error ?? meta?.message}</p>
+              {meta?.actionUrl ? (
+                <a
+                  className="inline-block break-all rounded-lg border border-danger-line bg-surface px-3 py-1.5 text-xs underline"
+                  href={meta.actionUrl}
+                  rel="noreferrer noopener"
+                  target="_blank"
+                >
+                  پیوند اصلاحی خودِ سرویس (کنسول Google)
+                </a>
+              ) : null}
+              {meta?.detail ? (
+                <p className="text-xs leading-5 text-muted" dir="ltr">
+                  {meta.detail}
+                </p>
+              ) : null}
+              <p className="text-xs leading-5 text-muted">
+                دلیل و راه‌حل از پاسخ خودِ سرویس استخراج شده است؛ اگر تحلیل هم همین
+                ساعت‌ها خطا داشته، هر دو از یک اختلال رنج می‌برند و اول آن یکی را درست کنید.
+              </p>
+            </div>
           ) : null}
         </div>
       ) : (

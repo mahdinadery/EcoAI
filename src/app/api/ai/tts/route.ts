@@ -77,11 +77,14 @@ export async function POST(request: Request) {
         model: requestedModel,
         voice: requestedVoice,
         errorKind: result.kind,
+        // `code` + `message` come from `classifyTtsProviderError`: what the reply
+        // means and what to do about it. `detail` keeps the provider's own words so
+        // nothing is taken on trust. `actionUrl` only exists when the provider
+        // itself pointed at a console page.
+        code: result.code ?? null,
         message: result.message,
-        hint:
-          result.kind === "http_error"
-            ? "اگر متن خطای Provider «model not found» یا «unsupported» بود، یعنی این کلید مسیر صوتی ندارد؛ در آن حالت سرویس TTS جدا لازم است."
-            : undefined,
+        detail: result.detail ?? null,
+        actionUrl: result.actionUrl ?? null,
       },
       { status: result.kind === "not_configured" || result.kind === "unsupported_route" ? 409 : 502 },
     );

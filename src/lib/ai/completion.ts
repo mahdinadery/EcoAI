@@ -20,16 +20,27 @@ const XAI_BASE_URL = "https://api.x.ai/v1";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const FAST_FALLBACK_GEMINI_MODEL = "gemini-2.0-flash";
+/**
+ * Timeout recovery swaps to a non-thinking, fast model. It used to be
+ * `gemini-2.0-flash`, which Google has since retired: the "faster model" hop was
+ * itself a guaranteed 404, which then masked the real reason (see
+ * `describeExhaustedModelsFa`).
+ */
+const FAST_FALLBACK_GEMINI_MODEL = "gemini-2.5-flash-lite";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_XAI_MODEL = "grok-3-mini";
 
+/**
+ * Only ids the provider still serves may live here. A ladder whose last hop is a
+ * retired model answers 404, and because that 404 is the *last* thing that happened,
+ * it is what got reported — an operator then "fixes" a model name they never set.
+ */
 const GEMINI_FALLBACK_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
   "gemini-3-flash-preview",
+  "gemini-3.8-flash",
 ] as const;
 
 const GROQ_FALLBACK_MODELS = [
@@ -44,6 +55,13 @@ const FALLBACK_COMPACT_MAX_TOKENS = 1_200;
 
 const MAX_RETRIES = 2;
 const MAX_MODEL_FALLBACK_HOPS = 4;
+/**
+ * A `limit: 0` / daily-RPD answer is usually a property of the key, but per-model
+ * caps do exist, so exactly one rotation hop is still worth spending. Past that,
+ * walking the rest of the ladder only burns requests — and used to report whichever
+ * hop happened to be last (a retired `gemini-2.0-flash` 404) as the cause.
+ */
+const MAX_HARD_QUOTA_HOPS = 1;
 const RATE_LIMIT_BUFFER_MS = 1_000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504, 522, 524, 529]);
 
@@ -52,6 +70,8 @@ export type CompletionErrorKind =
   | "timeout"
   | "network_error"
   | "http_error"
+  /** The key/plan is out of quota: a whole-pass problem, not a model problem. */
+  | "quota_exhausted"
   | "api_error";
 
 export type AiTokenUsage = {
@@ -169,8 +189,11 @@ export function resolveAiProxyUrl(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /**
- * Normalizes common Gemini model slug typos / retired 1.5 aliases (e.g.
- * `gemini-3.0-flash` -> `gemini-3-flash-preview`, `gemini-1.5-flash` -> `gemini-2.5-flash`).
+ * Normalizes common Gemini model slug typos / retired aliases (e.g.
+ * `gemini-3.0-flash` -> `gemini-3-flash-preview`, `gemini-2.0-flash` ->
+ * `gemini-3.8-flash`). Mapping a retired id forward is what keeps a stored config
+ * working after Google deprecates a model; mapping it to *itself* (as this used to
+ * do for `gemini-2.0-flash-latest`) only guarantees a 404.
  */
 export function normalizeGoogleModelId(rawModel: string): string {
   const cleaned = rawModel
@@ -185,7 +208,11 @@ export function normalizeGoogleModelId(rawModel: string): string {
     return "gemini-3-pro-preview";
   }
   if (lower === "gemini-2.5-flash-latest") return "gemini-2.5-flash";
-  if (lower === "gemini-2.0-flash-latest") return "gemini-2.0-flash";
+  if (lower === "gemini-2.0-flash" || lower === "gemini-2.0-flash-latest" || lower === "gemini-2.0-flash-001") {
+    // Retired upstream; its own 404 names the replacement
+    // ("Please update your code to use models/gemini-3.8-flash"), so follow it.
+    return "gemini-3.8-flash";
+  }
   if (lower === "gemini-1.5-flash" || lower === "gemini-1.5-flash-latest" || lower === "gemini-1.5-flash-8b") {
     return "gemini-2.5-flash";
   }
@@ -494,6 +521,73 @@ function describeHttpStatusFa(status: number, model: string, detail?: string | n
   return `سرویس هوش مصنوعی خطای HTTP ${status} بازگرداند (مدل: ${model}).`;
 }
 
+function joinFa(parts: Array<string | null | undefined>): string {
+  return parts
+    .map((part) => (part ?? "").trim())
+    .filter((part) => part.length > 0)
+    .join(" ");
+}
+
+/**
+ * A provider that retires a model usually names the replacement in the same
+ * sentence. Surfacing it beats making the operator read a raw body: the name goes
+ * into the report *and* becomes the next rotation hop.
+ */
+export function extractSuggestedModel(detail?: string | null): string | null {
+  const text = String(detail ?? "");
+  const match = /(?:update your code to use|please use|migrat\w+ to|renamed? to|use)\s+(?:models\/)?([A-Za-z0-9][A-Za-z0-9._-]*)/i.exec(
+    text,
+  );
+  const candidate = match?.[1]?.replace(/[.,;:)]+$/, "");
+  if (!candidate) return null;
+  // Refuse anything that is not model-shaped, so a gateway's prose never becomes a
+  // model id we then send to the API.
+  return /^(?:models\/)?(?:gemini|gpt|o[134]|chatgpt|llama|claude|grok|mistral|deepseek)[a-z0-9._-]*$/i.test(candidate)
+    ? candidate
+    : null;
+}
+
+type ModelAttemptFailure = { status: number; model: string; detail: string | null };
+
+/**
+ * One honest Persian report for "every model we tried failed": the attempt that
+ * *started* the rotation is the headline (it is the model the operator configured),
+ * the alternatives are listed as context, and a provider-named replacement is
+ * surfaced. Without this, the tail of the ladder — e.g. a retired id answering 404 —
+ * is what the admin UI shows, and hours go into debugging the wrong thing.
+ */
+function describeExhaustedModelsFa(params: {
+  apiKey?: string;
+  first: ModelAttemptFailure | null;
+  last: ModelAttemptFailure;
+  tried: string[];
+  suggestedModel: string | null;
+}): { kind: CompletionErrorKind; message: string } {
+  const quota = isHardQuotaExhausted(params.last.status, params.last.detail ?? "");
+  const headline =
+    params.first && params.first.model !== params.last.model
+      ? describeHttpStatusFa(params.first.status, params.first.model, params.first.detail, params.apiKey)
+      : describeHttpStatusFa(params.last.status, params.last.model, params.last.detail, params.apiKey);
+
+  const others = [...new Set(params.tried)].filter((model) => model !== params.first?.model);
+  const note =
+    params.first && params.first.model !== params.last.model
+      ? `هیچ‌کدام از مدل‌های جایگزین هم پاسخ ندادند (${others.join("، ")}).`
+      : others.length > 0
+        ? `مدل‌های جایگزین آزمایش‌شده: ${others.join("، ")}.`
+        : null;
+
+  const suggestion =
+    params.suggestedModel && params.suggestedModel !== params.last.model
+      ? `خودِ سرویس مدل «${params.suggestedModel}» را پیشنهاد کرده است.`
+      : null;
+
+  return {
+    kind: quota ? "quota_exhausted" : "http_error",
+    message: joinFa([headline, note, suggestion]),
+  };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -550,8 +644,16 @@ async function callVertexExpressGenerateContent(
   let lastModel = params.initialModel;
   let lastSafeDetail: string | null = null;
   let lastConciseReason: string | null = null;
+  // Trail for the honest report: which model the caller actually configured, and
+  // every model this run burned a request on.
+  const triedModels: string[] = [];
+  let firstFailure: ModelAttemptFailure | null = null;
+  let suggestedModel: string | null = null;
+  let quotaHopsUsed = 0;
+  let stopCandidateRotation = false;
 
   for (const model of candidates) {
+    if (stopCandidateRotation) break;
     lastModel = model;
     let useThinkingBudget = /^gemini-2\.5-flash$/i.test(model);
     let baseEndpoint = VERTEX_EXPRESS_BASE_URL;
@@ -610,6 +712,29 @@ async function callVertexExpressGenerateContent(
           lastStatus = response.status;
           lastSafeDetail = safeDetail;
           lastConciseReason = conciseReason;
+          triedModels.push(model);
+          firstFailure ??= { status: response.status, model, detail: safeDetail };
+          suggestedModel = extractSuggestedModel(safeDetail) ?? suggestedModel;
+
+          // Same rule as the chat transport: one hop for a per-model cap, then stop
+          // and report the attempt that started it (see MAX_HARD_QUOTA_HOPS).
+          if (isHardQuotaExhausted(response.status, safeDetail)) {
+            quotaHopsUsed += 1;
+            if (quotaHopsUsed > MAX_HARD_QUOTA_HOPS) stopCandidateRotation = true;
+          }
+
+          // The provider named a live replacement: try it next instead of a
+          // ladder entry that may itself be retired.
+          if (suggestedModel) {
+            const here = candidates.indexOf(model);
+            const dup = candidates.indexOf(suggestedModel, here + 1);
+            // Splicing after the cursor is safe for `for…of`; removing the later
+            // duplicate first keeps the suggestion as exactly one hop.
+            if (dup > -1) candidates.splice(dup, 1);
+            if (candidates.indexOf(suggestedModel) === -1) {
+              candidates.splice(candidates.indexOf(model) + 1, 0, suggestedModel);
+            }
+          }
 
           if (response.status === 400 && useThinkingBudget && /thinking/i.test(safeDetail)) {
             useThinkingBudget = false;
@@ -700,10 +825,18 @@ async function callVertexExpressGenerateContent(
     }
   }
 
+  const exhausted = describeExhaustedModelsFa({
+    apiKey: params.apiKey,
+    first: firstFailure,
+    last: { status: lastStatus || 429, model: lastModel, detail: lastSafeDetail },
+    tried: triedModels,
+    suggestedModel,
+  });
+
   return {
     ok: false,
-    kind: "http_error",
-    message: describeHttpStatusFa(lastStatus || 429, lastModel, lastSafeDetail, params.apiKey),
+    kind: exhausted.kind,
+    message: exhausted.message,
     detail: lastConciseReason ?? lastSafeDetail,
   };
 }
@@ -770,6 +903,13 @@ export async function callAiChatCompletion(
   const fallbackPool = candidateModelsForProvider(baseUrl, currentModel);
   let fallbackIndex = 0;
   let modelFallbacksUsed = 0;
+  // Which model the caller configured, and what this run tried after it. The
+  // report uses this so a retired fallback id cannot become the headline.
+  const configuredModel = currentModel;
+  const triedModels: string[] = [];
+  let firstFailure: ModelAttemptFailure | null = null;
+  let suggestedModel: string | null = null;
+  let quotaHopsUsed = 0;
 
   let useJsonObjectFormat = jsonMode;
   let useMaxCompletionTokens = false;
@@ -838,6 +978,10 @@ export async function callAiChatCompletion(
         const safeDetail = sanitizeSecrets(rawErr, apiKey, proxyUrl);
         const conciseReason = extractProviderErrorReason(safeDetail);
 
+        triedModels.push(currentModel);
+        firstFailure ??= { status: response.status, model: currentModel, detail: safeDetail };
+        suggestedModel = extractSuggestedModel(safeDetail) ?? suggestedModel;
+
         // 0) Drop `reasoning_effort` if the OpenAI-compatible gateway does not recognize it
         if (reasoningEffort && shouldDropReasoningEffort(response.status, safeDetail) && attempt < maxRetries) {
           reasoningEffort = null;
@@ -878,11 +1022,22 @@ export async function callAiChatCompletion(
 
         // 4) Per-model quota (`429`) or missing/decommissioned model (`404`/`400`):
         //    immediately rotate to the next provider fallback model without sleeping.
+        const hardQuotaNow = isHardQuotaExhausted(response.status, safeDetail);
         if (
           shouldTryFallbackModel(response.status, safeDetail) &&
-          fallbackIndex + 1 < fallbackPool.length &&
+          (!hardQuotaNow || quotaHopsUsed < MAX_HARD_QUOTA_HOPS) &&
+          (fallbackIndex + 1 < fallbackPool.length ||
+            (suggestedModel && !fallbackPool.includes(suggestedModel))) &&
           modelFallbacksUsed < MAX_MODEL_FALLBACK_HOPS
         ) {
+          if (hardQuotaNow) quotaHopsUsed += 1;
+          if (suggestedModel) {
+            // The provider knows which model replaced the one it just rejected: go
+            // there directly instead of spending the hops in between on dead ids.
+            const at = fallbackPool.indexOf(suggestedModel);
+            if (at > fallbackIndex) fallbackIndex = at - 1;
+            else if (at === -1) fallbackPool.splice(fallbackIndex + 1, 0, suggestedModel);
+          }
           fallbackIndex += 1;
           modelFallbacksUsed += 1;
           const prevModel = currentModel;
@@ -896,12 +1051,26 @@ export async function callAiChatCompletion(
         }
 
         // 5) Hard quota ceiling (`limit: 0` / billing disabled / daily RPD exhausted):
-        //    never sleep 8–60s when no fallback models remain.
+        //    never sleep 8–60s when no fallback models remain. Reported through the
+        //    same trail as exhausted rotation, so the headline stays the model the
+        //    operator configured instead of the replacement we tried last.
         if (isHardQuotaExhausted(response.status, safeDetail)) {
+          const exhausted = describeExhaustedModelsFa({
+            apiKey,
+            first: firstFailure ?? { status: response.status, model: configuredModel, detail: safeDetail },
+            last: { status: response.status, model: currentModel, detail: safeDetail },
+            tried: triedModels,
+            suggestedModel,
+          });
           return {
             ok: false,
-            kind: "http_error",
-            message: describeHttpStatusFa(response.status, currentModel, safeDetail, apiKey),
+            kind: "quota_exhausted",
+            message: joinFa([
+              exhausted.message,
+              quotaHopsUsed > 0
+                ? `با تغییر مدل هم برطرف نشد (${quotaHopsUsed} جایگزین آزمایش شد).`
+                : null,
+            ]),
             detail: conciseReason ?? (safeDetail || null),
           };
         }
@@ -925,10 +1094,18 @@ export async function callAiChatCompletion(
           continue;
         }
 
+        const exhausted = describeExhaustedModelsFa({
+          apiKey,
+          first: firstFailure ?? { status: response.status, model: configuredModel, detail: safeDetail },
+          last: { status: response.status, model: currentModel, detail: safeDetail },
+          tried: triedModels,
+          suggestedModel,
+        });
+
         return {
           ok: false,
-          kind: "http_error",
-          message: describeHttpStatusFa(response.status, currentModel, safeDetail, apiKey),
+          kind: exhausted.kind,
+          message: exhausted.message,
           detail: conciseReason ?? (safeDetail || null),
         };
       }

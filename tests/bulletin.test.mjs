@@ -374,6 +374,38 @@ test("a ten-item weekly digest keeps keycap numbering all the way down", () => {
   assert.equal(text.includes("6. خبر"), false, "no stray decimal numbering next to the emoji");
 });
 
+test("a placeholder line that resolves to nothing disappears instead of opening a gap", () => {
+  const template = "{number} {title}\n{affiliationsBlock}\n{whyBlock}\n{originalUrl}";
+  const withoutAffiliations = buildBulletinMessage({
+    intro: null,
+    items: [item({})],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { showAffiliations: true, itemTemplate: template },
+  });
+  assert.ok(withoutAffiliations.includes("انتشار رتبه‌بندی اعتباری شرکت‌های بزرگ\nچرا مهم است:"), withoutAffiliations);
+  assert.equal(/\n\n(?!\n)/.test(withoutAffiliations.split("1️⃣")[1] ?? ""), false, "no blank line inside the item");
+
+  const withAffiliations = buildBulletinMessage({
+    intro: null,
+    items: [item({ affiliations: ["ETH Zurich"] })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { showAffiliations: true, itemTemplate: template },
+  });
+  assert.ok(withAffiliations.includes("\ud83c\udf93 ETH Zurich"), withAffiliations);
+
+  // An intentional blank line (no placeholder on it) survives.
+  const spaced = buildBulletinMessage({
+    intro: "مقدمه",
+    items: [item({})],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { template: "{title}\n\n{intro}\n\n{items}", itemTemplate: "{title}\n\n{originalUrl}" },
+  });
+  assert.ok(spaced.includes("بولتن خبری\n\nمقدمه"), spaced);
+});
+
 test("publisher and author are first-class bulletin template variables", () => {
   assert.deepEqual(validateBulletinSettings({ itemTemplate: "{publisher} {publisherBlock} {author}" }), []);
   assert.equal(validateBulletinSettings({ showPublisher: "yes" }).length, 1);

@@ -54,7 +54,16 @@ export function unknownBulletinVariables(template: string, allowed: readonly str
   return [...new Set([...template.matchAll(/\{([a-zA-Z]+)\}/g)].map((match) => match[1]).filter((key) => !allowed.includes(key)))];
 }
 function renderTemplate(template: string, values: Record<string, string>): string {
-  return template.replace(/\{([a-zA-Z]+)\}/g, (match, key: string) => values[key] ?? match).replace(/\n{3,}/g, "\n\n").trim();
+  const fill = (text: string) => text.replace(/\{([a-zA-Z]+)\}/g, (match, key: string) => values[key] ?? match);
+  // A line made only of placeholders that all resolved to empty is dropped:
+  // otherwise every hidden field (say `{affiliationsBlock}` on a news story with no
+  // institutions) would leave a blank paragraph in the middle of the item. Lines
+  // without placeholders stay, so an intentional blank line still works.
+  const kept = template
+    .split("\n")
+    .filter((line) => !(line.trim() !== "" && /\{[a-zA-Z]+\}/.test(line) && fill(line).trim() === ""))
+    .map(fill);
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export type BulletinSettings = {

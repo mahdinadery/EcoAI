@@ -14,7 +14,7 @@ import {
   type AgentScheduleConfig,
 } from "@/lib/agent/schedule";
 import { readScheduleRecord, recordRunResult, saveScheduleConfig } from "@/lib/agent/schedule-store";
-import { isScheduledRunInProgress, runScheduledPass } from "@/lib/agent/scheduled-run";
+import { digestItemCap, isScheduledRunInProgress, runScheduledPass } from "@/lib/agent/scheduled-run";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,6 +41,10 @@ export async function GET() {
   const bale = getBaleConfigStatus();
   const due = computeDueSlot({ now: new Date(), config: record, lastRunSlot: record.lastRunSlot });
   const next = nextRunInfo(record);
+  // A weekly cadence with a five-item cap silently drops most of the week, so the
+  // dashboard needs the configured cap to warn about it. A missing AI config row
+  // must never break this read, hence the catch.
+  const digest = await digestItemCap().catch(() => null);
 
   return Response.json({
     success: true,
@@ -83,6 +87,9 @@ export async function GET() {
       // many days of news the next digest will cover.
       bulletinCadence: bulletinCadenceLabel(record.bulletinDays),
       bulletinWindowDays: bulletinLookbackDays(record.bulletinDays),
+      // The digest length the operator currently has configured — the schedule card
+      // warns when a weekly cadence is paired with a 5-item cap.
+      bulletinMaxItems: digest == null ? null : digest,
       dueReason: due.due ? "due" : due.reason,
       running: isScheduledRunInProgress(),
     },

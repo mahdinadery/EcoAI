@@ -36,6 +36,9 @@ export const BULLETIN_ITEM_TEMPLATE_VARS = [
   "whyBlock",
   "entities",
   "entitiesBlock",
+  "publisher",
+  "publisherBlock",
+  "author",
   "sources",
   "originalUrl",
   "importanceScore",
@@ -43,7 +46,7 @@ export const BULLETIN_ITEM_TEMPLATE_VARS = [
 ] as const;
 export const DEFAULT_BULLETIN_TEMPLATE = "🗞️ {title} — {date}\n\n{intro}\n\n{items}";
 export const DEFAULT_BULLETIN_ITEM_TEMPLATE =
-  "{number} {bilingualTitle}\n{summary}\n{whyBlock}\n{entitiesBlock}\n{sources}\n{originalUrl}\n{hashtags}";
+  "{number} {bilingualTitle}\n{publisherBlock}\n{summary}\n{whyBlock}\n{entitiesBlock}\n{sources}\n{originalUrl}\n{hashtags}";
 
 export function unknownBulletinVariables(template: string, allowed: readonly string[]): string[] {
   return [...new Set([...template.matchAll(/\{([a-zA-Z]+)\}/g)].map((match) => match[1]).filter((key) => !allowed.includes(key)))];
@@ -61,6 +64,8 @@ export type BulletinSettings = {
   showWhy: boolean;
   showEntities: boolean;
   showSources: boolean;
+  /** Publishing institution (feed/venue) + author byline, as a compact line. */
+  showPublisher: boolean;
   aiIntro: boolean;
   introPrompt: string;
   introMaxTokens: number;
@@ -75,6 +80,7 @@ export const DEFAULT_BULLETIN_SETTINGS: BulletinSettings = {
   showWhy: true,
   showEntities: true,
   showSources: true,
+  showPublisher: true,
   aiIntro: true,
   introPrompt:
     "تو سردبیر یک بولتن تخصصی در حوزهٔ «اقتصاد هوش مصنوعی» (The Economics of AI) هستی. یک جمع‌بندی فارسی روان ۲ تا ۴ جمله‌ای از مقالات داده‌شده و پیامد مستندشان برای بهره‌وری، بازار کار، سرمایه‌گذاری زیرساختی و اقتصاد هوش مصنوعی بنویس. ارتباط حدسی نساز. فقط متن جمع‌بندی فارسی، بدون عنوان یا فهرست یا Markdown.",
@@ -120,7 +126,7 @@ export function validateBulletinSettings(value: unknown): string[] {
     errors.push("سقف توکن مقدمه باید ۵۰ تا ۵۰۰ باشد.");
   if (settings.introPrompt !== undefined && (typeof settings.introPrompt !== "string" || !settings.introPrompt.trim() || settings.introPrompt.length > 4000))
     errors.push("دستور مقدمه باید یک تا ۴۰۰۰ نویسه باشد.");
-  for (const key of ["showSummary", "showWhy", "showEntities", "showSources", "aiIntro"] as const) {
+  for (const key of ["showSummary", "showWhy", "showEntities", "showSources", "showPublisher", "aiIntro"] as const) {
     if (settings[key] !== undefined && typeof settings[key] !== "boolean")
       errors.push(`گزینه بولتن ${key} باید روشن یا خاموش باشد.`);
   }
@@ -145,9 +151,24 @@ export type BulletinItem = {
   corroborationSources?: string[];
   /** Phase 3: Persian entity names (institutions/banks/countries). */
   entityTags?: string[];
+  /**
+   * Publishing institution — where the article came from (the registered feed:
+   * «arXiv», «NBER», «صندوق بین‌المللی پول»). In a weekly digest this is what lets a
+   * reader judge provenance without opening the link, so it renders right under
+   * the headline. Distinct from `corroborationSources` (other outlets carrying
+   * the same event) and from `entityTags` (institutions the story is about).
+   */
+  publisher?: string | null;
+  /** Author byline as carried by the feed, when there is one. */
+  author?: string | null;
 };
 
-const NUMBER_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"];
+/**
+ * Leading marker per digest slot. Ten entries because a weekly issue legitimately
+ * runs to `BULLETIN_ITEM_CEILING` items: mixing "1️⃣ … 5️⃣" with "6." would read as a
+ * formatting bug, so the keycap row is kept complete.
+ */
+const NUMBER_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 
 function escapeMd(text: string): string {
   return text
@@ -196,6 +217,19 @@ function formatBulletinTitles(item: BulletinItem): {
     bilingualInline: hasDistinct ? `${escapedPrimary}\n🌐 ${escapedOrig}` : escapedOrig,
     hasDistinctTranslation: hasDistinct,
   };
+}
+
+/**
+ * One provenance line under the headline: «🏛️ نهاد منتشرکننده · نویسنده: …».
+ * Empty when neither is known, so a feed without an author byline never renders
+ * a dangling label.
+ */
+function formatPublisherLine(item: BulletinItem): string {
+  const venue = compact(item.publisher, 80);
+  const byline = compact(item.author, 70);
+  if (!venue && !byline) return "";
+  if (!venue) return `نویسنده: ${escapeMd(byline)}`;
+  return byline ? `🏛️ ${escapeMd(venue)} · نویسنده: ${escapeMd(byline)}` : `🏛️ ${escapeMd(venue)}`;
 }
 
 /**
@@ -311,6 +345,8 @@ export function buildBulletinMessage(args: {
     if (titles.hasDistinctTranslation) {
       lines.push(`🌐 ${titles.originalTitle}`);
     }
+    const publisherLine = settings.showPublisher ? formatPublisherLine(item) : "";
+    if (publisherLine) lines.push(publisherLine);
     const oneLiner = compactSummaryForBulletin(item.oneLiner, 520);
     if (settings.showSummary && oneLiner) lines.push(escapeMd(oneLiner));
     const why = compact(item.whyItMatters, 240);
@@ -341,6 +377,9 @@ export function buildBulletinMessage(args: {
           whyBlock: settings.showWhy && why ? `چرا مهم است: ${escapeMd(why)}` : "",
           entities: settings.showEntities ? escapeMd(entities) : "",
           entitiesBlock: settings.showEntities && entities ? `نهادها: ${escapeMd(entities)}` : "",
+          publisher: settings.showPublisher ? escapeMd(compact(item.publisher, 80)) : "",
+          publisherBlock: publisherLine,
+          author: escapeMd(compact(item.author, 70)),
           sources: settings.showSources
             ? otherSources.length
               ? `تأییدشده توسط ${Math.max(2, otherSources.length + 1).toLocaleString("fa-IR")} منبع: ${otherSources.join("، ")}`

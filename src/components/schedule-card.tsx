@@ -92,6 +92,7 @@ type ApiResponse = {
     lastBulletinSlot?: string | null;
     bulletinCadence?: string;
     bulletinWindowDays?: number;
+    bulletinMaxItems?: number | null;
   };
   destinationsReady?: { local: boolean; bale: boolean };
   baleMissing?: string[];
@@ -1063,6 +1064,13 @@ export function ScheduleCard({
                   «ارسال فوری بولتن» این انتخاب را دور می‌زند.
                   {status?.nextBulletinAt ? ` بولتن بعدی: ${formatInZone(status.nextBulletinAt, config.timezone)}.` : ""}
                 </p>
+                {status?.bulletinWindowDays != null && status.bulletinWindowDays >= 7 && status.bulletinMaxItems != null && status.bulletinMaxItems < 8 ? (
+                  <p className="mt-1.5 text-[11px] leading-5 text-warn-ink">
+                    بولتن هفتگی است ولی فقط {status.bulletinMaxItems.toLocaleString("fa-IR")} خبر می‌گیرد؛ یک
+                    هفته پژوهش در این سقف جا نمی‌شود. در «پیکربندی AI → پیکربندی بولتن» تعداد را ۸ تا ۱۰
+                    کنید (و برای جاگرفتن در یک پیام باله، «نمایش خلاصه» را خاموش نگه دارید).
+                  </p>
+                ) : null}
               </div>
 
               <button

@@ -92,6 +92,8 @@ export async function POST(request: Request) {
         publishedAt: item.publishedAt,
         corroborated: (item.corroborationCount ?? 0) >= 2,
         entityTags: item.entityTags ?? [],
+        publisher: item.source,
+        author: item.author,
       })),
       generatedAt: new Date(),
       timezone: record.timezone,

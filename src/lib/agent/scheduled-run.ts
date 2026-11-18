@@ -109,7 +109,7 @@ export async function selectSendCandidates(
  * `bulletin.maxItems`, so a weekly issue can legitimately carry eight or ten
  * items without anyone having to touch code.
  */
-async function digestItemCap(): Promise<number> {
+export async function digestItemCap(): Promise<number> {
   const aiConfig = await getActiveAiConfig();
   return resolveBulletinSettings(aiConfig.decisionRules.bulletin).maxItems;
 }
@@ -262,6 +262,9 @@ async function sendBulletin(
         (source) => source !== item.source,
       ),
       entityTags: item.entityTags ?? [],
+      // Provenance under the headline: the registered feed is who published it.
+      publisher: item.source,
+      author: item.author,
     })),
     generatedAt: new Date(),
     timezone: config.timezone,

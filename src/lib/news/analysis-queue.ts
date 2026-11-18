@@ -357,7 +357,12 @@ function isFatalProviderConfigFailure(
   message: string | null,
   detail: string | null,
 ): boolean {
-  if (code === "missing_key" || code === "timeout" || code === "network_error") return true;
+  // `quota_exhausted` is produced by the transport when even the one allowed
+  // rotation hop hit the same wall: keep it fatal so a bulk pass stops at once
+  // instead of spending four dead requests per remaining article.
+  if (code === "missing_key" || code === "quota_exhausted" || code === "timeout" || code === "network_error") {
+    return true;
+  }
   if (code === "http_error") {
     const combined = `${message ?? ""} ${detail ?? ""}`;
     if (/\bHTTP\s+(401|402|403|404|429)\b/i.test(combined)) return true;

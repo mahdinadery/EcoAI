@@ -264,7 +264,7 @@ test("callAiChatCompletion shrinks max_tokens automatically on TPM / credit-limi
   }
 });
 
-test("callAiChatCompletion sets reasoning_effort=low on gemini-2.5 and falls back to gemini-2.0-flash on timeout", async () => {
+test("callAiChatCompletion sets reasoning_effort=low on gemini-2.5 and falls back to the fast lite model on timeout", async () => {
   const prevKey = process.env.AI_API_KEY;
   process.env.AI_API_KEY = "AIzaSyTestGeminiKey";
   const seenRequests = [];
@@ -310,7 +310,9 @@ test("callAiChatCompletion sets reasoning_effort=low on gemini-2.5 and falls bac
     assert.equal(seenRequests.length, 2);
     assert.equal(seenRequests[0].model, "gemini-2.5-flash");
     assert.equal(seenRequests[0].reasoning_effort, "low");
-    assert.equal(seenRequests[1].model, "gemini-2.0-flash");
+    // The old timeout target (gemini-2.0-flash) is retired upstream: a "faster model"
+    // hop that answers 404 hides the real reason. See tests/model-rotation.test.mjs.
+    assert.equal(seenRequests[1].model, "gemini-2.5-flash-lite");
     assert.equal(seenRequests[1].reasoning_effort, undefined);
     assert.equal(seenRequests[1].max_tokens, 1200);
     assert.ok(seenRequests[1].userLen < 3000);

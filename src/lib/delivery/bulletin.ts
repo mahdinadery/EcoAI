@@ -94,6 +94,32 @@ export function resolveBulletinSettings(value?: Partial<BulletinSettings>): Bull
   return { ...merged, maxItems: Math.max(1, Math.min(BULLETIN_ITEM_CEILING, maxItems)) };
 }
 
+/**
+ * One-click shape for a weekly issue, measured against Bale's 4000-character
+ * message limit: eight items, the headline, the publishing institution and a
+ * single «why it matters» line fit in ONE message, while the same eight items
+ * with the Persian summary overflow into two. The summary is a weekday-digest
+ * habit — in a weekly review the reader decides «read or not» from the title and
+ * the venue, and the link is still there.
+ *
+ * `title`, the intro prompt and the intro model are deliberately untouched: a
+ * cadence preset must not rewrite the editorial voice.
+ */
+export const WEEKLY_BULLETIN_PRESET: Partial<BulletinSettings> = {
+  maxItems: 8,
+  showSummary: false,
+  showWhy: true,
+  showPublisher: true,
+  showEntities: false,
+  showSources: false,
+  itemTemplate: "{number} {bilingualTitle}\n{publisherBlock}\n{whyBlock}\n{originalUrl}",
+};
+
+/** `WEEKLY_BULLETIN_PRESET` merged over the current settings (clamped + typed). */
+export function applyWeeklyBulletinPreset(value?: Partial<BulletinSettings>): BulletinSettings {
+  return resolveBulletinSettings({ ...value, ...WEEKLY_BULLETIN_PRESET });
+}
+
 export function validateBulletinSettings(value: unknown): string[] {
   if (value === undefined) return [];
   if (!value || typeof value !== "object" || Array.isArray(value)) return ["تنظیمات بولتن نامعتبر است."];

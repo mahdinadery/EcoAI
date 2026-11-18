@@ -1,6 +1,6 @@
 "use client";
 
-import { BULLETIN_ITEM_CEILING, buildBulletinMessage, BULLETIN_TEMPLATE_VARS, BULLETIN_ITEM_TEMPLATE_VARS, DEFAULT_BULLETIN_TEMPLATE, DEFAULT_BULLETIN_ITEM_TEMPLATE, unknownBulletinVariables, DEFAULT_BULLETIN_SETTINGS, resolveBulletinSettings, type BulletinSettings } from "@/lib/delivery/bulletin";
+import { applyWeeklyBulletinPreset, BULLETIN_ITEM_CEILING, buildBulletinMessage, BULLETIN_TEMPLATE_VARS, BULLETIN_ITEM_TEMPLATE_VARS, DEFAULT_BULLETIN_TEMPLATE, DEFAULT_BULLETIN_ITEM_TEMPLATE, unknownBulletinVariables, DEFAULT_BULLETIN_SETTINGS, resolveBulletinSettings, type BulletinSettings } from "@/lib/delivery/bulletin";
 
 type Props = { value?: Partial<BulletinSettings>; onChange: (value: BulletinSettings) => void };
 export function BulletinConfigPanel({ value, onChange }: Props) {
@@ -26,7 +26,7 @@ export function BulletinConfigPanel({ value, onChange }: Props) {
     })),
   });
   return <section className="rounded-2xl border border-line bg-surface p-5 space-y-3" dir="rtl">
-    <div className="flex justify-between"><h2 className="font-bold">پیکربندی بولتن</h2><button type="button" className="text-xs text-muted" onClick={() => onChange({...DEFAULT_BULLETIN_SETTINGS})}>بازنشانی پیش‌فرض</button></div>
+    <div className="flex justify-between"><h2 className="font-bold">پیکربندی بولتن</h2><div className="flex gap-3"><button type="button" className="text-xs text-muted" onClick={() => update(applyWeeklyBulletinPreset(settings))} title="۸ خبر، عنوان + نهاد منتشرکننده + چرایی اهمیت، بدون خلاصه — جاگرفتن در یک پیام باله">اعمال چیدمان هفتگی</button><button type="button" className="text-xs text-muted" onClick={() => onChange({...DEFAULT_BULLETIN_SETTINGS})}>بازنشانی پیش‌فرض</button></div></div>
     <p className="text-xs text-muted">برای بولتن زمان‌بندی‌شده و بولتن موجودیت‌ها. پس از «ذخیره و فعال‌سازی» روی بولتن‌های بعدی اعمال می‌شود. زمان‌بندی و مقصد همچنان در تنظیمات زمان‌بندی کنترل می‌شوند.</p>
     <label className="block text-sm">عنوان بولتن<input className="mx-2 rounded border border-line p-2" maxLength={100} value={settings.title} onChange={e => update({title:e.target.value})}/></label>
     <label className="block text-sm">حداکثر تعداد خبر (۱ تا ۱۰)<input type="number" min={1} max={BULLETIN_ITEM_CEILING} className="mx-2 w-20 rounded border border-line p-2" value={settings.maxItems} onChange={e => update({maxItems:Number(e.target.value)})}/></label>

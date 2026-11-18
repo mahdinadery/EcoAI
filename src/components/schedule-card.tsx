@@ -1067,8 +1067,9 @@ export function ScheduleCard({
                 {status?.bulletinWindowDays != null && status.bulletinWindowDays >= 7 && status.bulletinMaxItems != null && status.bulletinMaxItems < 8 ? (
                   <p className="mt-1.5 text-[11px] leading-5 text-warn-ink">
                     بولتن هفتگی است ولی فقط {status.bulletinMaxItems.toLocaleString("fa-IR")} خبر می‌گیرد؛ یک
-                    هفته پژوهش در این سقف جا نمی‌شود. در «پیکربندی AI → پیکربندی بولتن» تعداد را ۸ تا ۱۰
-                    کنید (و برای جاگرفتن در یک پیام باله، «نمایش خلاصه» را خاموش نگه دارید).
+                    هفته پژوهش در این سقف جا نمی‌شود. در «پیکربندی AI → پیکربندی بولتن» روی
+                    «اعمال چیدمان هفتگی» بزنید: ۸ خبر، عنوان + نهاد منتشرکننده + چرایی اهمیت، بدون خلاصه —
+                    در یک پیام باله جا می‌شود.
                   </p>
                 ) : null}
               </div>

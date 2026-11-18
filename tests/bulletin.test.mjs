@@ -9,6 +9,8 @@ import {
   resolveBulletinSettings,
   validateBulletinSettings,
   buildBulletinMessage,
+  DEFAULT_BULLETIN_ITEM_TEMPLATE,
+  applyWeeklyBulletinPreset,
   pickBulletinItems,
   splitBaleMessage,
 } from "../src/lib/delivery/bulletin.ts";
@@ -300,4 +302,136 @@ test("a weekly digest still respects settings.maxItems when rendering", () => {
   });
   assert.match(text, /خبر 9/);
   assert.equal(text.includes("خبر 10"), false);
+});
+
+test("bulletin items name the publishing institution and byline under the headline", () => {
+  const text = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv: econ.GN", author: "Nina Mishra و همکاران" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "Asia/Tehran",
+  });
+  const lines = text.split("\n");
+  const titleAt = lines.findIndex((line) => line.includes("1️⃣"));
+  assert.ok(titleAt >= 0, text);
+  assert.equal(lines[titleAt + 1], "🏛️ arXiv: econ.GN · نویسنده: Nina Mishra و همکاران");
+});
+
+test("publisher line degrades instead of rendering an empty label", () => {
+  const bylineOnly = buildBulletinMessage({
+    intro: null,
+    items: [item({ author: "Nina Mishra" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  assert.ok(bylineOnly.includes("نویسنده: Nina Mishra"), bylineOnly);
+  assert.equal(bylineOnly.includes("\ud83c\udfdb"), false, "no institution emoji without an institution");
+
+  const neither = buildBulletinMessage({
+    intro: null,
+    items: [item({})],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  assert.equal(neither.includes("نویسنده:"), false);
+  assert.equal(neither.includes("\ud83c\udfdb"), false);
+});
+
+test("showPublisher:false hides the line and blanks its template variables", () => {
+  const args = {
+    intro: null,
+    items: [item({ publisher: "NBER", author: "Ann Lee" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  };
+  const off = buildBulletinMessage({
+    ...args,
+    settings: { showPublisher: false, itemTemplate: "{number} {title}\n[{publisherBlock}]\n({publisher})\n{originalUrl}" },
+  });
+  assert.equal(off.includes("NBER"), false, off);
+  assert.ok(off.includes("[]"), off);
+  assert.ok(off.includes("()"), off);
+
+  const on = buildBulletinMessage({
+    ...args,
+    settings: { itemTemplate: "{number} {title}\n{publisherBlock}\n{author}\n{originalUrl}" },
+  });
+  assert.ok(on.includes("\ud83c\udfdb\ufe0f NBER \u00b7 \u0646\u0648\u06cc\u0633\u0646\u062f\u0647: Ann Lee"), on);
+  assert.ok(on.includes("Ann Lee"), on);
+});
+
+test("a ten-item weekly digest keeps keycap numbering all the way down", () => {
+  const many = Array.from({ length: 10 }, (_, index) => item({ id: "n" + index, title: "خبر " + (index + 1) }));
+  const text = buildBulletinMessage({
+    intro: null,
+    items: many,
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { maxItems: BULLETIN_ITEM_CEILING },
+  });
+  assert.ok(text.includes("6\ufe0f\u20e3 خبر 6"), text);
+  assert.ok(text.includes("\ud83d\udd1f خبر 10"), text);
+  assert.equal(text.includes("6. خبر"), false, "no stray decimal numbering next to the emoji");
+});
+
+test("publisher and author are first-class bulletin template variables", () => {
+  assert.deepEqual(validateBulletinSettings({ itemTemplate: "{publisher} {publisherBlock} {author}" }), []);
+  assert.equal(validateBulletinSettings({ showPublisher: "yes" }).length, 1);
+  assert.equal(DEFAULT_BULLETIN_SETTINGS.showPublisher, true);
+  assert.ok(DEFAULT_BULLETIN_ITEM_TEMPLATE.includes("{publisherBlock}"), DEFAULT_BULLETIN_ITEM_TEMPLATE);
+});
+
+const weeklySample = (index) =>
+  item({
+    id: "w" + index,
+    title: "The Macroeconomics of Artificial Intelligence and Total Factor Productivity Growth: Evidence from " + index,
+    translatedTitle: "اقتصاد کلان هوش مصنوعی و رشد بهره‌وری کل عوامل: شواهد تجربی شمارهٔ " + index,
+    oneLiner:
+      "این یادداشت با دادهٔ پنل کشورها نشان می‌دهد که سرعت افت هزینهٔ استنتاج، انتشار بهره‌وری در بنگاه‌ها را تعیین می‌کند و شکاف سرمایه‌گذاری زیرساختی را بزرگ‌تر می‌سازد.",
+    whyItMatters: "اگر هزینهٔ استنتاج نصف شود، جدول زمانی اتوماسیون وظایف روتین چند سال جلو می‌افتد.",
+    url: "https://arxiv.org/abs/2511.0" + (1000 + index),
+    importanceScore: 90 - index,
+    publisher: "arXiv: econ.GN",
+    author: "Nina Mishra و همکاران",
+    entityTags: ["دفتر ملی پژوهش‌های اقتصادی آمریکا"],
+    corroborated: true,
+    corroborationSources: ["NBER", "VoxEU"],
+  });
+
+const renderWeekly = (settings, count = 8) =>
+  buildBulletinMessage({
+    intro: "جمع‌بندی مقدمهٔ نمونه برای این آزمون است و دو سه جمله طول می‌کشد تا واقع‌گرا باشد.",
+    items: Array.from({ length: count }, (_, index) => weeklySample(index + 1)),
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "Asia/Tehran",
+    settings,
+  });
+
+test("the weekly bulletin preset is valid, clamped and editorial-neutral", () => {
+  const preset = applyWeeklyBulletinPreset();
+  assert.equal(preset.maxItems, 8);
+  assert.equal(preset.showSummary, false);
+  assert.equal(preset.showPublisher, true);
+  assert.equal(preset.showEntities, false);
+  assert.deepEqual(validateBulletinSettings(preset), []);
+
+  // A cadence preset must not rewrite the paper's voice.
+  const tuned = applyWeeklyBulletinPreset({ title: "مرور هفتهٔ اقتصاد AI", introPrompt: "دستور خودم", introMaxTokens: 120 });
+  assert.equal(tuned.title, "مرور هفتهٔ اقتصاد AI");
+  assert.equal(tuned.introPrompt, "دستور خودم");
+  assert.equal(tuned.introMaxTokens, 120);
+  assert.equal(tuned.maxItems, 8);
+});
+
+test("weekly preset: eight full items fit one Bale message, summaries would not", () => {
+  const weekly = renderWeekly(applyWeeklyBulletinPreset());
+  assert.ok(weekly.length < BALE_MESSAGE_LIMIT, `preset digest is ${weekly.length} chars`);
+  assert.equal(splitBaleMessage(weekly).length, 1);
+  assert.ok(weekly.includes("\ud83c\udfdb\ufe0f arXiv: econ.GN"), weekly);
+  assert.ok(weekly.includes("چرا مهم است:"), weekly);
+  assert.equal(weekly.includes("این یادداشت با دادهٔ پنل"), false, "the preset drops the summary line");
+
+  const full = renderWeekly({ ...DEFAULT_BULLETIN_SETTINGS, maxItems: 8 });
+  assert.ok(full.length > BALE_MESSAGE_LIMIT, `full layout measured at ${full.length} chars`);
+  assert.equal(splitBaleMessage(full).length, 2, "the same eight items with summaries overflow");
 });

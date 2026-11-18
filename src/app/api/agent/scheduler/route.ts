@@ -14,7 +14,7 @@ import {
   type AgentScheduleConfig,
 } from "@/lib/agent/schedule";
 import { readScheduleRecord, recordRunResult, saveScheduleConfig } from "@/lib/agent/schedule-store";
-import { isScheduledRunInProgress, runScheduledPass } from "@/lib/agent/scheduled-run";
+import { digestItemCap, isScheduledRunInProgress, runScheduledPass } from "@/lib/agent/scheduled-run";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -31,6 +31,27 @@ function nextRunInfo(config: AgentScheduleConfig) {
 }
 
 /**
+ * Bulletin facts the dashboard shows next to the day picker. Shared by GET and
+ * PUT so saving a cadence cannot blank «بولتن بعدی» until the next reload, and
+ * so a weekly cadence paired with a too-small item cap is visible immediately.
+ * A missing AI config row must never break the schedule read, hence the catch.
+ */
+async function bulletinStatus(
+  config: Pick<AgentScheduleConfig, "timezone" | "bulletinTimes" | "bulletinDays">,
+) {
+  const cap = await digestItemCap().catch(() => null);
+  const next = computeNextBulletinRun({ now: new Date(), config });
+  return {
+    nextBulletinAt: next ? next.at.toISOString() : null,
+    // «هر روز» or «فقط جمعه» — what the day picker currently means, plus how
+    // many days of news the next digest will cover.
+    bulletinCadence: bulletinCadenceLabel(config.bulletinDays),
+    bulletinWindowDays: bulletinLookbackDays(config.bulletinDays),
+    bulletinMaxItems: cap ?? null,
+  };
+}
+
+/**
  * GET /api/agent/scheduler
  *
  * Current schedule + derived status for the dashboard. Read-only and exposes
@@ -41,6 +62,7 @@ export async function GET() {
   const bale = getBaleConfigStatus();
   const due = computeDueSlot({ now: new Date(), config: record, lastRunSlot: record.lastRunSlot });
   const next = nextRunInfo(record);
+  const bulletin = await bulletinStatus(record);
 
   return Response.json({
     success: true,
@@ -75,14 +97,7 @@ export async function GET() {
       lastTickAt: record.lastTickAt ? record.lastTickAt.toISOString() : null,
       // No tick for 15+ minutes => the GitHub Actions cron is not firing.
       cronStale: !record.lastTickAt || Date.now() - record.lastTickAt.getTime() > 15 * 60 * 1000,
-      nextBulletinAt: (() => {
-        const bulletinNext = computeNextBulletinRun({ now: new Date(), config: record });
-        return bulletinNext ? bulletinNext.at.toISOString() : null;
-      })(),
-      // «هر روز» or «فقط جمعه» — what the day picker currently means, plus how
-      // many days of news the next digest will cover.
-      bulletinCadence: bulletinCadenceLabel(record.bulletinDays),
-      bulletinWindowDays: bulletinLookbackDays(record.bulletinDays),
+      ...bulletin,
       dueReason: due.due ? "due" : due.reason,
       running: isScheduledRunInProgress(),
     },
@@ -135,6 +150,7 @@ export async function PUT(request: Request) {
         lastRunAt: saved.lastRunAt ? saved.lastRunAt.toISOString() : null,
         lastRunSlot: saved.lastRunSlot,
         lastResult: saved.lastResult,
+        ...await bulletinStatus(validation.config),
       },
       destinationsReady: { local: true, bale: bale.configured },
       baleMissing: bale.missing,

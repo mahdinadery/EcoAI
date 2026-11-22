@@ -15,6 +15,7 @@ import { news } from "@/db/schema";
 import { synthesizeBulletinBrief } from "@/lib/ai/bulletin-brief";
 import { sendBulletinDelivery } from "@/lib/delivery";
 import { buildBulletinMessage, resolveBulletinSettings, pickBulletinItems } from "@/lib/delivery/bulletin";
+import { bulletinAffiliations } from "@/lib/news/provenance";
 import { coerceScheduleConfig } from "@/lib/agent/schedule";
 import { enforceDecisionRuleFloors, evaluateArticle } from "@/lib/agent/rules";
 import { collapseEventGroups } from "@/lib/news/corroboration";
@@ -77,6 +78,9 @@ export async function POST(request: Request) {
       { model: aiConfig.model, enabled: bulletin.aiIntro, introPrompt: bulletin.introPrompt, maxTokens: bulletin.introMaxTokens },
     );
 
+    // Same best-effort institution lookup as the scheduled digest (never blocks the send).
+    const affiliations = await bulletinAffiliations(items, bulletin.showAffiliations);
+
     const text = buildBulletinMessage({
       settings: bulletin,
       intro,
@@ -94,6 +98,7 @@ export async function POST(request: Request) {
         entityTags: item.entityTags ?? [],
         publisher: item.source,
         author: item.author,
+        affiliations: affiliations.get(item.id) ?? [],
       })),
       generatedAt: new Date(),
       timezone: record.timezone,

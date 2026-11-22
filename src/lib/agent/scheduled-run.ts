@@ -16,7 +16,7 @@ import { getActiveAiConfig, readActiveOperationalSettings } from "@/lib/ai/confi
 import { synthesizeBulletinBrief } from "@/lib/ai/bulletin-brief";
 import { sendBulletinDelivery } from "@/lib/delivery";
 import { buildBulletinMessage, resolveBulletinSettings, MAX_BULLETIN_ITEMS, pickBulletinItems } from "@/lib/delivery/bulletin";
-import { bulletinAffiliations } from "@/lib/news/provenance";
+import { bulletinProvenance } from "@/lib/news/provenance";
 import { bulletinLookbackDays } from "./schedule";
 import { diagnoseDbError } from "@/lib/admin/db-errors";
 import { expandTargets } from "@/lib/delivery/types";
@@ -245,7 +245,7 @@ async function sendBulletin(
   // Authors' institutions are not in the feed: one best-effort OpenAlex lookup per
   // selected item, bounded by its own wall-clock budget so a slow API costs a
   // missing line, never a missed publishing window.
-  const affiliations = await bulletinAffiliations(items, bulletin.showAffiliations);
+  const provenance = await bulletinProvenance(items, bulletin.showAffiliations);
   const text = buildBulletinMessage({
     // A weekly issue labels its header with the covered range («۸ آبان تا ۱۴ آبان»)
     // instead of a single date, so nobody mistakes it for the daily bulletin.
@@ -270,7 +270,8 @@ async function sendBulletin(
       // Provenance under the headline: the registered feed is who published it.
       publisher: item.source,
       author: item.author,
-      affiliations: affiliations.get(item.id) ?? [],
+      affiliations: provenance.get(item.id)?.institutions ?? [],
+      venue: provenance.get(item.id)?.venue ?? null,
     })),
     generatedAt: new Date(),
     timezone: config.timezone,

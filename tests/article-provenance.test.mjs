@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import {
-  bulletinAffiliations,
+  bulletinProvenance,
   extractArxivId,
   fetchProvenance,
   formatAffiliationLine,
@@ -35,6 +35,7 @@ test("openAlexWorkPath builds the DOI lookup segment", () => {
 test("normalizeOpenAlexWork ranks corresponding first, then the first author", () => {
   const info = normalizeOpenAlexWork({
     doi: "https://doi.org/10.48550/arXiv.2511.01234",
+    primary_location: { source: { display_name: "Review of Economics and Statistics" } },
     authorships: [
       { author_position: "first", author: { display_name: "A. First" }, institutions: [inst("Alpha University", { country_code: "us", type: "education" })] },
       {
@@ -56,8 +57,22 @@ test("normalizeOpenAlexWork ranks corresponding first, then the first author", (
     ],
   );
   assert.equal(info.arxivId, "2511.01234");
+  assert.equal(info.venue, "Review of Economics and Statistics");
   assert.equal(info.authorCount, 4);
   assert.equal(formatAffiliationLine(info.institutions), "Gamma Lab · Alpha University · Beta Institute");
+});
+
+test("a self-archived copy is not a publisher", () => {
+  const preprint = normalizeOpenAlexWork({
+    primary_location: { source: { display_name: "arXiv (Cornell University)" } },
+    authorships: [{ author_position: "single", institutions: [inst("TU Delft")] }],
+  });
+  assert.equal(preprint.venue, null, "the repository behind the PDF must not be reported as the venue");
+  assert.deepEqual(preprint.institutions.map((entry) => entry.name), ["TU Delft"]);
+
+  const noLocation = normalizeOpenAlexWork({ authorships: [{ author_position: "single", institutions: [inst("TU Delft")] }] });
+  assert.equal(noLocation.venue, null);
+  assert.equal(normalizeOpenAlexWork({ primary_location: "junk", authorships: [{ institutions: [inst("X Univ")] }] }).venue, null);
 });
 
 test("normalizeOpenAlexWork drops repository placeholders and junk payloads", () => {
@@ -86,6 +101,7 @@ function startMockApi() {
         JSON.stringify({
           doi: "https://doi.org/10.48550/arXiv.2511.00001",
           authorships: [{ author_position: "first", institutions: [inst("University of Michigan")] }],
+          primary_location: { source: { display_name: "Journal of Political Economy" } },
         }),
       );
       return;
@@ -122,6 +138,8 @@ test("fetchProvenance: resolves indexed papers, tolerates 404 and timeouts, neve
     );
     assert.deepEqual([...results.keys()], ["found"], "only the indexed arXiv paper resolves");
     assert.deepEqual(results.get("found").institutions.map((entry) => entry.name), ["University of Michigan"]);
+    assert.equal(results.get("found").venue, "Journal of Political Economy");
+    assert.ok(mock.seen.every((url) => url.includes("select=id,doi,authorships")), mock.seen.join("\n"));
     assert.ok(mock.seen.every((url) => url.includes("select=id,doi,authorships")), mock.seen.join("\n"));
   } finally {
     await mock.close();
@@ -169,7 +187,24 @@ test("the mailto hint reaches the API and the config stays bounded", async () =>
   else process.env.NEWS_ARTICLE_PROVENANCE_TIMEOUT_MS = original;
 });
 
-test("bulletinAffiliations is a no-op while the option is off", async () => {
-  const map = await bulletinAffiliations([{ id: "n1", url: "https://arxiv.org/abs/2511.00001" }], false);
-  assert.equal(map.size, 0);
+test("bulletinProvenance flattens what the digest needs, and is a no-op when off", async () => {
+  assert.equal((await bulletinProvenance([{ id: "n1", url: "https://arxiv.org/abs/2511.00001" }], false)).size, 0, "off must not touch the network");
+
+  // `bulletinProvenance` takes no overrides — it is configured by env, which is
+  // also how an operator points it at a mirror or a proxy.
+  const previous = process.env.NEWS_ARTICLE_PROVENANCE_BASE_URL;
+  const mock = await startMockApi();
+  process.env.NEWS_ARTICLE_PROVENANCE_BASE_URL = mock.baseUrl;
+  try {
+    const map = await bulletinProvenance([{ id: "n1", url: "https://arxiv.org/abs/2511.00001" }], true);
+    assert.deepEqual(map.get("n1"), {
+      institutions: ["University of Michigan"],
+      venue: "Journal of Political Economy",
+    });
+    assert.ok(mock.seen.every((url) => url.includes("/works/doi:10.48550/arXiv.2511.00001")), mock.seen.join("\n"));
+  } finally {
+    await mock.close();
+    if (previous === undefined) delete process.env.NEWS_ARTICLE_PROVENANCE_BASE_URL;
+    else process.env.NEWS_ARTICLE_PROVENANCE_BASE_URL = previous;
+  }
 });

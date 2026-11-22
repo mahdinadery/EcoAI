@@ -524,3 +524,50 @@ test("affiliations are template variables and three items is the cap", () => {
   assert.deepEqual(validateBulletinSettings({ itemTemplate: "{affiliations} {affiliationsBlock}" }), []);
   assert.equal(validateBulletinSettings({ showAffiliations: 1 }).length, 1);
 });
+
+test("a real venue outranks the feed on the provenance line, without repeating it", () => {
+  const published = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv: econ.GN", venue: "Review of Economics and Statistics", author: "Nina Mishra" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  assert.ok(
+    published.includes("\ud83c\udfdb\ufe0f Review of Economics and Statistics \u00b7 arXiv: econ.GN \u00b7 \u0646\u0648\u06cc\u0633\u0646\u062f\u0647: Nina Mishra"),
+    published,
+  );
+
+  const preprint = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv: econ.GN", venue: null, author: "Nina Mishra" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  assert.ok(preprint.includes("\ud83c\udfdb\ufe0f arXiv: econ.GN \u00b7 \u0646\u0648\u06cc\u0633\u0646\u062f\u0647: Nina Mishra"), preprint);
+  assert.equal(preprint.split("\n").filter((line) => line.includes("arXiv: econ.GN")).length, 1, "no doubled feed mention");
+
+  // Venue identical to the feed (the common arXiv self-archive case) collapses.
+  const same = buildBulletinMessage({
+    intro: null,
+    items: [item({ publisher: "arXiv", venue: "arXiv" })],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+  });
+  const line = same.split("\n").find((entry) => entry.includes("\ud83c\udfdb"));
+  assert.equal(line, "\ud83c\udfdb\ufe0f arXiv");
+});
+
+test("venue is usable as its own template variable", () => {
+  const text = buildBulletinMessage({
+    intro: null,
+    items: [item({ venue: "Econometrica" }), item({})],
+    generatedAt: new Date("2026-11-13T06:00:00Z"),
+    timezone: "UTC",
+    settings: { itemTemplate: "{number} {title}\n{venueBlock}\n{originalUrl}" },
+  });
+  assert.ok(text.includes("\ud83d\udcc4 Econometrica"), text);
+  const lines = text.split("\n");
+  assert.equal(lines.filter((entry) => entry.includes("\ud83d\udcc4")).length, 1, "an item without a venue keeps no empty line");
+  assert.deepEqual(validateBulletinSettings({ itemTemplate: "{venue} {venueBlock}" }), []);
+  assert.deepEqual(validateBulletinSettings({ itemTemplate: "{venueX}" }).length, 1);
+});

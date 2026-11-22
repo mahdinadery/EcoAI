@@ -15,7 +15,7 @@ import { news } from "@/db/schema";
 import { synthesizeBulletinBrief } from "@/lib/ai/bulletin-brief";
 import { sendBulletinDelivery } from "@/lib/delivery";
 import { buildBulletinMessage, resolveBulletinSettings, pickBulletinItems } from "@/lib/delivery/bulletin";
-import { bulletinAffiliations } from "@/lib/news/provenance";
+import { bulletinProvenance } from "@/lib/news/provenance";
 import { coerceScheduleConfig } from "@/lib/agent/schedule";
 import { enforceDecisionRuleFloors, evaluateArticle } from "@/lib/agent/rules";
 import { collapseEventGroups } from "@/lib/news/corroboration";
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     );
 
     // Same best-effort institution lookup as the scheduled digest (never blocks the send).
-    const affiliations = await bulletinAffiliations(items, bulletin.showAffiliations);
+    const provenance = await bulletinProvenance(items, bulletin.showAffiliations);
 
     const text = buildBulletinMessage({
       settings: bulletin,
@@ -98,7 +98,8 @@ export async function POST(request: Request) {
         entityTags: item.entityTags ?? [],
         publisher: item.source,
         author: item.author,
-        affiliations: affiliations.get(item.id) ?? [],
+        affiliations: provenance.get(item.id)?.institutions ?? [],
+        venue: provenance.get(item.id)?.venue ?? null,
       })),
       generatedAt: new Date(),
       timezone: record.timezone,

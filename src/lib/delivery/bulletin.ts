@@ -40,6 +40,8 @@ export const BULLETIN_ITEM_TEMPLATE_VARS = [
   "publisherBlock",
   "affiliations",
   "affiliationsBlock",
+  "venue",
+  "venueBlock",
   "author",
   "sources",
   "originalUrl",
@@ -212,6 +214,13 @@ export type BulletinItem = {
    * article is not an arXiv paper, is too new to be indexed, or the lookup failed.
    */
   affiliations?: string[];
+  /**
+   * Journal / conference the work is published in, when the provenance lookup found
+   * a real one. This is the most accurate answer to «چه نهادی این را منتشر کرده», so
+   * `publisherBlock` leads with it and keeps the feed behind it as the source of the
+   * copy. `null` for a plain preprint or a news story.
+   */
+  venue?: string | null;
 };
 
 /**
@@ -276,11 +285,19 @@ function formatBulletinTitles(item: BulletinItem): {
  * a dangling label.
  */
 function formatPublisherLine(item: BulletinItem): string {
-  const venue = compact(item.publisher, 80);
+  const feed = compact(item.publisher, 80);
+  const publishedIn = compact(item.venue, 80);
   const byline = compact(item.author, 70);
-  if (!venue && !byline) return "";
-  if (!venue) return `نویسنده: ${escapeMd(byline)}`;
-  return byline ? `🏛️ ${escapeMd(venue)} · نویسنده: ${escapeMd(byline)}` : `🏛️ ${escapeMd(venue)}`;
+  // Venue first, feed as the origin of the copy — but only when they differ, since
+  // for most arXiv papers "the source" and "the feed" are the same words twice.
+  const distinctFeed =
+    publishedIn && feed && feed.toLowerCase().replace(/[^a-z0-9]/g, "") !== publishedIn.toLowerCase().replace(/[^a-z0-9]/g, "")
+      ? feed
+      : "";
+  const origin = publishedIn ? escapeMd(publishedIn) + (distinctFeed ? ` · ${escapeMd(distinctFeed)}` : "") : escapeMd(feed);
+  if (!publishedIn && !feed && !byline) return "";
+  if (!publishedIn && !feed) return `نویسنده: ${escapeMd(byline)}`;
+  return byline ? `🏛️ ${origin} · نویسنده: ${escapeMd(byline)}` : `🏛️ ${origin}`;
 }
 
 /**
@@ -437,6 +454,8 @@ export function buildBulletinMessage(args: {
           author: escapeMd(compact(item.author, 70)),
           affiliations: settings.showAffiliations ? escapeMd(affiliationNames) : "",
           affiliationsBlock,
+          venue: escapeMd(compact(item.venue, 80)),
+          venueBlock: compact(item.venue, 80) ? `📄 ${escapeMd(compact(item.venue, 80))}` : "",
           sources: settings.showSources
             ? otherSources.length
               ? `تأییدشده توسط ${Math.max(2, otherSources.length + 1).toLocaleString("fa-IR")} منبع: ${otherSources.join("، ")}`

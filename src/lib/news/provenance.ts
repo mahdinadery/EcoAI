@@ -34,7 +34,7 @@ const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_BUDGET_MS = 6_000;
 const DEFAULT_CONCURRENCY = 4;
 /** Trimmed response: only the fields `normalizeOpenAlexWork` reads. */
-const SELECT_FIELDS = "id,doi,authorships,authorships_count";
+const SELECT_FIELDS = "id,doi,authorships,authorships_count,primary_location";
 
 /**
  * arXiv registers a DataCite DOI per submission and OpenAlex indexes works by it.
@@ -65,6 +65,12 @@ export type ProvenanceInstitution = {
 export type ProvenanceInfo = {
   arxivId: string;
   institutions: ProvenanceInstitution[];
+  /**
+   * Journal or conference the work is published in, when OpenAlex knows a real
+   * one — `null` for a preprint whose only location is arXiv itself (the
+   * self-archived copy would otherwise be reported as the publisher).
+   */
+  venue: string | null;
   /** Author count as OpenAlex saw it (may exceed the number of institutions). */
   authorCount: number;
 };
@@ -132,6 +138,20 @@ function asString(value: unknown): string | null {
 }
 
 /**
+ * `primary_location.source` is where the published copy lives. arXiv appears there
+ * for most preprints — a "source" in OpenAlex, not a publisher — and would just
+ * repeat the feed line, so repository-shaped names are dropped.
+ */
+function extractVenue(work: LooseRecord): string | null {
+  const source = asRecord(asRecord(work.primary_location)?.source);
+  const name = source ? asString(source.display_name) : null;
+  if (!name) return null;
+  const key = normalizeName(name);
+  if (!key || key.includes("arxiv") || NOISE_INSTITUTIONS.has(key)) return null;
+  return name;
+}
+
+/**
  * Reads the institution list off an OpenAlex work.
  *
  * `authorships[].institutions` is the ONLY place they live — the top-level
@@ -185,6 +205,7 @@ export function normalizeOpenAlexWork(raw: unknown, options: { maxInstitutions?:
   return {
     arxivId: arxivId ?? "",
     institutions: picked.slice(0, max),
+    venue: extractVenue(work),
     authorCount: typeof work.authorships_count === "number" ? work.authorships_count : authorships.length,
   };
 }
@@ -315,27 +336,33 @@ export async function fetchProvenance(
   return results;
 }
 
+/** What a digest entry needs from a provenance lookup, already flattened. */
+export type BulletinProvenance = {
+  institutions: string[];
+  venue: string | null;
+};
+
 /**
- * Convenience for the digest builders: institution NAMES per article, empty when
- * the operator turned the option off. Never rejects — a bulletin must not fail
- * because a metadata API is down.
+ * Convenience for the digest builders: institution names + venue per article,
+ * empty when the operator turned the option off. Never rejects — a bulletin must
+ * not fail because a metadata API is down.
  */
-export async function bulletinAffiliations(
+export async function bulletinProvenance(
   articles: readonly { id: string; url: string; externalId?: string | null }[],
   enabled: boolean,
-): Promise<Map<string, string[]>> {
-  const names = new Map<string, string[]>();
-  if (!enabled) return names;
+): Promise<Map<string, BulletinProvenance>> {
+  const found = new Map<string, BulletinProvenance>();
+  if (!enabled) return found;
   try {
     const provenance = await fetchProvenance(
       articles.map((article) => ({ key: article.id, url: article.url, externalId: article.externalId })),
     );
     for (const [key, info] of provenance) {
-      const list = info.institutions.map((entry) => entry.name).filter(Boolean);
-      if (list.length) names.set(key, list);
+      const institutions = info.institutions.map((entry) => entry.name).filter(Boolean);
+      if (institutions.length || info.venue) found.set(key, { institutions, venue: info.venue });
     }
   } catch (error) {
     console.error("[provenance] lookup failed:", String(error).slice(0, 160));
   }
-  return names;
+  return found;
 }

@@ -24,6 +24,7 @@ export function BulletinConfigPanel({ value, onChange }: Props) {
       publisher: "arXiv: econ.GN",
       author: "Nina Mishra و همکاران",
       affiliations: ["University of Oxford", "Google DeepMind"],
+      venue: "Review of Economics and Statistics",
     })),
   });
   return <section className="rounded-2xl border border-line bg-surface p-5 space-y-3" dir="rtl">
@@ -32,10 +33,10 @@ export function BulletinConfigPanel({ value, onChange }: Props) {
     <label className="block text-sm">عنوان بولتن<input className="mx-2 rounded border border-line p-2" maxLength={100} value={settings.title} onChange={e => update({title:e.target.value})}/></label>
     <label className="block text-sm">حداکثر تعداد خبر (۱ تا ۱۰)<input type="number" min={1} max={BULLETIN_ITEM_CEILING} className="mx-2 w-20 rounded border border-line p-2" value={settings.maxItems} onChange={e => update({maxItems:Number(e.target.value)})}/></label>
     <p className="text-xs text-muted">برای بولتن روزانه ۵ کافی است؛ برای بولتن هفتگی ۸ تا ۱۰ را انتخاب کنید، وگرنه یک هفته خبر در پنج سطر خفه می‌شود.</p>
-    <div className="flex flex-wrap gap-4">{([{key:"showSummary",label:"نمایش خلاصه"},{key:"showWhy",label:"چرا مهم است"},{key:"showEntities",label:"نمایش نهادها"},{key:"showSources",label:"نمایش تأیید چندمنبعی"},{key:"showPublisher",label:"نهاد منتشرکننده و نویسنده"},{key:"showAffiliations",label:"نهاد نویسندگان (OpenAlex)"},{key:"aiIntro",label:"مقدمه با AI (یک درخواست اضافه)"}] as const).map(item => <label key={item.key} className="text-sm"><input type="checkbox" checked={settings[item.key]} onChange={e => update({[item.key]:e.target.checked})}/> {item.label}</label>)}</div>
+    <div className="flex flex-wrap gap-4">{([{key:"showSummary",label:"نمایش خلاصه"},{key:"showWhy",label:"چرا مهم است"},{key:"showEntities",label:"نمایش نهادها"},{key:"showSources",label:"نمایش تأیید چندمنبعی"},{key:"showPublisher",label:"نهاد منتشرکننده و نویسنده"},{key:"showAffiliations",label:"نهاد نویسندگان و نشریه (OpenAlex)"},{key:"aiIntro",label:"مقدمه با AI (یک درخواست اضافه)"}] as const).map(item => <label key={item.key} className="text-sm"><input type="checkbox" checked={settings[item.key]} onChange={e => update({[item.key]:e.target.checked})}/> {item.label}</label>)}</div>
     <label className="block text-sm">دستور مقدمهٔ AI<textarea className="mt-2 w-full rounded border border-line p-2 text-sm" rows={4} value={settings.introPrompt} onChange={e => update({introPrompt:e.target.value})}/></label>
     <label className="block text-sm">سقف توکن پاسخ مقدمه (۵۰ تا ۵۰۰)<input type="number" min={50} max={500} className="mx-2 w-24 rounded border border-line p-2" value={settings.introMaxTokens} onChange={e => update({introMaxTokens:Number(e.target.value)})}/></label>
-    <p className="text-xs text-muted">«نهاد نویسندگان» برخلاف بقیهٔ گزینه‌ها هنگام ساخت بولتن کار شبکه‌ای می‌کند: برای هر خبر یک درخواست عمومی به OpenAlex (بدون کلید، بدون توکن AI) با سقف زمانی برای کل بولتن. اگر API در دسترس نباشد یا مقاله هنوز ایندکس نشده باشد، فقط همان سطر حذف می‌شود و ارسال به تعویق نمی‌افتد.</p>
+    <p className="text-xs text-muted">«نهاد نویسندگان و نشریه» برخلاف بقیهٔ گزینه‌ها هنگام ساخت بولتن کار شبکه‌ای می‌کند: برای هر خبر یک درخواست عمومی به OpenAlex (بدون کلید، بدون توکن AI) با سقف زمانی برای کل بولتن. همان پاسخ، نام نشریه/کنفرانس را هم می‌دهد؛ اگر مقاله فقط پیش‌چاپ باشد، نام فید تنها می‌ماند. اگر API در دسترس نباشد یا مقاله هنوز ایندکس نشده باشد، فقط همان سطر حذف می‌شود و ارسال به تعویق نمی‌افتد.</p>
     <p className="text-xs text-muted">خاموش کردن مقدمه، فراخوانی AI آن را حذف می‌کند. مدل از تنظیمات اصلی تحلیل خوانده می‌شود. لینک اصلی خبر همیشه حفظ می‌شود.</p>
     <h3 className="font-bold">قالب انتشار بولتن (Publishing Template)</h3>
     <p className="text-xs text-muted">برای شمارهٔ هفتگی این قالب را پیشنهاد می‌کنیم (⏎ = خط جدید) و «نمایش خلاصه» را خاموش کنید: <code dir="ltr">{"{number} {bilingualTitle} ⏎ {publisherBlock} ⏎ {whyBlock} ⏎ {originalUrl}"}</code> دلیلش سقف ۴۰۰۰ نویسهٔ باله است: ۱۰ خبرِ کامل دو پیام می‌شود، و ۸ خبر با همین چیدمان ۳۴۶۴ نویسه (یک پیام). اگر ۱۰ خبر می‌خواهید، «نهاد نویسندگان» را خاموش کنید.</p>
